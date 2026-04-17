@@ -1,6 +1,6 @@
-# The Suite — A Briefing
+# The Loom Suite — A Briefing
 
-**Audience**: engineers, reviewers, or stakeholders new to the three-tool suite
+**Audience**: engineers, reviewers, or stakeholders new to the Loom suite
 **Purpose**: explain what each tool does, how they fit together, and what state the suite is in today
 **Reading time**: ~5 minutes
 
@@ -8,11 +8,11 @@
 
 ## The one-paragraph version
 
-**Clarion**, **Filigree**, and **Wardline** are three independent tools that compose into an enterprise-grade code governance suite for small teams. Clarion builds a trustworthy catalog of a codebase and answers structural questions. Filigree tracks the issues, findings, and observations that arise from examining that codebase. Wardline declares and enforces the trust topology that constrains how code is allowed to behave. Each tool is useful on its own; together, they deliver rigor that normally requires enterprise-scale platform teams — without the operational weight.
+**Loom** is a suite for enterprise-grade code governance on small teams. Its v0.1 products — **Clarion**, **Filigree**, and **Wardline** — are three independent tools that compose into a single operating fabric. Clarion builds a trustworthy catalog of a codebase and answers structural questions. Filigree tracks the issues, findings, and observations that arise from examining that codebase. Wardline declares and enforces the trust topology that constrains how code is allowed to behave. Each tool is useful on its own; together, they deliver rigor that normally requires enterprise-scale platform teams — without the operational weight. A fourth product, **Shuttle**, is proposed for transactional scoped change execution; see `loom.md` for the suite's founding doctrine and the go/no-go test that governs future products.
 
 ---
 
-## The three tools
+## The Loom products
 
 ### Clarion — the code-archaeology catalog
 
@@ -49,6 +49,18 @@ Wardline understands "which code is allowed to do what." Modules declare their t
 **Typical invocation**: `wardline scan` at commit cadence (pre-commit hook or CI); SARIF output uploaded to GitHub Security.
 
 **Status**: already built and in active use.
+
+### Shuttle — transactional change executor (proposed)
+
+**Role**: executes an already-scoped change plan against the working tree with ordered edits, gated checks, rollback, and telemetry.
+
+Shuttle is the Loom suite's change-execution layer. It receives a scoped change intent, binds it to concrete files or entities, orders the edits, applies them incrementally with pre- and post-change checks, rolls back on failure, and lints / commits / emits telemetry on success. It does **not** plan changes (Filigree tracks work), reason about correctness (Wardline and tests do), or understand code structure (Clarion does).
+
+**Authoritative for**: the transactional execution record of a code change.
+
+**Typical invocation**: none yet; design not started.
+
+**Status**: proposed. No design document. `loom.md` §5 describes the go/no-go test that gates new Loom products.
 
 ---
 
@@ -110,10 +122,10 @@ Findings are the other glue: every tool emits findings into Filigree's `POST /ap
 
 ## Principles that shape the suite
 
-Four commitments keep the three tools from drifting into overlap:
+Four commitments keep the Loom products from drifting into overlap (see `loom.md` for the suite's full doctrine, including the federation axiom and the composition law):
 
 1. **Clarion observes, Wardline enforces.** Clarion detects that an annotation is present; Wardline determines whether the annotated code satisfies the semantic it declares. Clarion never re-implements Wardline analyses; Wardline never re-implements Clarion's graph.
-2. **Findings are facts, not just errors.** A unified `Finding` record type carries defects, structural observations, classifications, metrics, and suggestions across all three tools.
+2. **Findings are facts, not just errors.** A unified `Finding` record type carries defects, structural observations, classifications, metrics, and suggestions across all Loom products.
 3. **Each tool is independently useful.** Clarion works without Filigree (writes findings to local JSONL). Wardline works without Clarion (has since day one). Filigree works without either.
 4. **Local-first, single-binary, git-committable state.** No hosted service is required; `.clarion/`, `.filigree/`, and Wardline's JSON state files are all meant to be committed and shared.
 
@@ -126,6 +138,7 @@ Four commitments keep the three tools from drifting into overlap:
 | Filigree | Yes | Yes — active development | `filigree` itself; this project |
 | Wardline | Yes | Yes — commit-cadence scanner | Wardline's own codebase |
 | Clarion | No — designed only | Not yet | `elspeth` (~425k LOC Python) targeted for v0.1 validation |
+| Shuttle | No — proposed; no design yet | Not yet | None — not yet scoped |
 
 ### What Clarion v0.1 ships
 
@@ -146,6 +159,7 @@ Clarion's design (`docs/superpowers/specs/2026-04-17-clarion-v0.1-design.md`, §
 
 | If you want to… | Read |
 |---|---|
+| Read Loom's founding doctrine — federation axiom, composition law, go/no-go test | `docs/loom.md` |
 | Understand Clarion's full design | `docs/superpowers/specs/2026-04-17-clarion-v0.1-design.md` |
 | See what the design reviewer flagged | `docs/superpowers/specs/2026-04-17-clarion-v0.1-design-review.md` |
 | See the integration reality check | `docs/superpowers/specs/2026-04-17-clarion-integration-recon.md` |
