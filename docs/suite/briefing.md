@@ -8,7 +8,7 @@
 
 ## The one-paragraph version
 
-**Loom** is a suite for enterprise-grade code governance on small teams. Its v0.1 products — **Clarion**, **Filigree**, and **Wardline** — are three independent tools that enrich one another through narrow additive protocols. Each is fully authoritative in its domain and fully usable on its own. Clarion builds a trustworthy catalog of a codebase and answers structural questions. Filigree tracks the issues, findings, and observations that arise from examining that codebase. Wardline declares and enforces the trust topology that constrains how code is allowed to behave. Together they deliver rigor that normally requires enterprise-scale platform teams — without the operational weight, and without any shared runtime, store, or orchestrator. A fourth product, **Shuttle**, is proposed for transactional scoped change execution; see `loom.md` for the suite's founding doctrine, the enrichment-not-load-bearing principle, and the go/no-go test that governs future products.
+**Loom** is a suite for enterprise-grade code governance on small teams. Its v0.1 products — **Clarion**, **Filigree**, and **Wardline** — are three independent tools that enrich one another through narrow additive protocols. Each is fully authoritative in its domain and fully usable on its own. Clarion builds a trustworthy catalog of a codebase and answers structural questions. Filigree tracks the issues, findings, and observations that arise from examining that codebase. Wardline declares and enforces the trust topology that constrains how code is allowed to behave. Together they deliver rigor that normally requires enterprise-scale platform teams — without the operational weight, and without any shared runtime, store, or orchestrator. A fourth product, **Shuttle**, is proposed for transactional scoped change execution; see [loom.md](./loom.md) for the suite's founding doctrine, the enrichment-not-load-bearing principle, and the go/no-go test that governs future products.
 
 ---
 
@@ -60,7 +60,7 @@ Shuttle is the Loom suite's change-execution layer. It receives a scoped change 
 
 **Typical invocation**: none yet; design not started.
 
-**Status**: proposed. No design document. `loom.md` §5 describes the go/no-go test that gates new Loom products.
+**Status**: proposed. No design document. [loom.md](./loom.md) §7 describes the go/no-go test that gates new Loom products.
 
 ---
 
@@ -122,7 +122,7 @@ Findings are the other glue: every tool emits findings into Filigree's `POST /ap
 
 ## Principles that shape the suite
 
-Four commitments keep the Loom products from drifting into overlap (see `loom.md` for the suite's full doctrine, including the federation axiom and the composition law):
+Four commitments keep the Loom products from drifting into overlap (see [loom.md](./loom.md) for the suite's full doctrine, including the federation axiom and the composition law):
 
 1. **Clarion observes, Wardline enforces.** Clarion detects that an annotation is present; Wardline determines whether the annotated code satisfies the semantic it declares. Clarion never re-implements Wardline analyses; Wardline never re-implements Clarion's graph.
 2. **Findings are facts, not just errors.** A unified `Finding` record type carries defects, structural observations, classifications, metrics, and suggestions across all Loom products.
@@ -151,7 +151,7 @@ Because Clarion is the work that weaves the fabric, several changes land in the 
 - **Filigree**: a pluggable `registry_backend` so Clarion can own the file registry; an HTTP endpoint for observation creation; a published schema-compatibility contract.
 - **Wardline**: a stable `REGISTRY_VERSION` that Clarion's plugin pins against; a commitment to maintain legacy-decorator aliases; eventually, a native emitter to Filigree so Clarion's SARIF translator can retire.
 
-Clarion's design (`docs/superpowers/specs/2026-04-17-clarion-v0.1-design.md`, §11 Suite Bootstrap) enumerates these asks with owner and sequence. Clarion ships with degraded-mode fallbacks (`--no-filigree`, `--no-wardline`) so it doesn't block on the slowest of three release trains.
+Clarion's v0.1 design set spells these asks out in [system-design.md](../clarion/v0.1/system-design.md) and [detailed-design.md](../clarion/v0.1/detailed-design.md). Clarion ships with degraded-mode fallbacks (`--no-filigree`, `--no-wardline`) so it doesn't block on the slowest of three release trains.
 
 ---
 
@@ -159,9 +159,12 @@ Clarion's design (`docs/superpowers/specs/2026-04-17-clarion-v0.1-design.md`, §
 
 | If you want to… | Read |
 |---|---|
-| Read Loom's founding doctrine — federation axiom, composition law, go/no-go test | `docs/loom.md` |
-| Understand Clarion's full design | `docs/superpowers/specs/2026-04-17-clarion-v0.1-design.md` |
-| See what the design reviewer flagged | `docs/superpowers/specs/2026-04-17-clarion-v0.1-design-review.md` |
-| See the integration reality check | `docs/superpowers/specs/2026-04-17-clarion-integration-recon.md` |
+| Read Loom's founding doctrine — federation axiom, composition law, go/no-go test | [loom.md](./loom.md) |
+| Enter the Clarion v0.1 docset in reading order | [../clarion/v0.1/README.md](../clarion/v0.1/README.md) |
+| Read Clarion's requirements | [../clarion/v0.1/requirements.md](../clarion/v0.1/requirements.md) |
+| Read Clarion's system design | [../clarion/v0.1/system-design.md](../clarion/v0.1/system-design.md) |
+| Read Clarion's detailed design reference | [../clarion/v0.1/detailed-design.md](../clarion/v0.1/detailed-design.md) |
+| See what the design reviewer flagged | [../clarion/v0.1/reviews/design-review.md](../clarion/v0.1/reviews/design-review.md) |
+| See the integration reality check | [../clarion/v0.1/reviews/integration-recon.md](../clarion/v0.1/reviews/integration-recon.md) |
 | Work with Filigree today | `/home/john/filigree` — `CLAUDE.md` and `filigree --help` |
 | Work with Wardline today | `/home/john/wardline` — `docs/spec/` |

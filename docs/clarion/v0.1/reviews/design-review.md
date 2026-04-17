@@ -5,6 +5,8 @@
 **Review method**: Eight parallel specialist reviews across solution architecture, systems dynamics, Python engineering, Rust engineering, security, integration architecture, reality check (symbol/path/API verification), and architecture-decision rigor.
 **Verdict**: **Revise before authoring the implementation plan.** Two factual errors must be corrected; four structural decisions need explicit ADRs; the v0.1 scope has three known defects that will damage the suite's cross-tool identity story if not resolved before first ship.
 
+**Historical note**: this review evaluates the pre-restructure single-file design. The current canonical docset lives in [../README.md](../README.md), with the resulting implementation-level reference in [../detailed-design.md](../detailed-design.md).
+
 ---
 
 ## 1. Factual Corrections (Must Fix Before Plan)

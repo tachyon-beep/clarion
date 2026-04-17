@@ -1,14 +1,14 @@
 # Clarion v0.1 — Requirements
 
-**Status**: Draft — matches detailed-design revision 4
+**Status**: Draft — aligned with the layered docset baseline and detailed-design revision 5
 **Date**: 2026-04-17
 **Primary author**: qacona@gmail.com (with Claude)
 **First customer target**: `/home/john/elspeth` (~425k LOC Python)
 **Companion documents**:
-- `2026-04-17-clarion-v0.1-system-design.md` — system design (the *how*, mid-level)
-- `2026-04-17-clarion-v0.1-detailed-design.md` — detailed design reference (implementation-level)
-- `2026-04-17-clarion-v0.1-design-review.md` — prior review that shaped revs 2-4
-- `2026-04-17-clarion-integration-recon.md` — reality check against Filigree / Wardline
+- [system-design.md](./system-design.md) — system design (the *how*, mid-level)
+- [detailed-design.md](./detailed-design.md) — detailed design reference (implementation-level)
+- [reviews/design-review.md](./reviews/design-review.md) — prior review that shaped revs 2-4
+- [reviews/integration-recon.md](./reviews/integration-recon.md) — reality check against Filigree / Wardline
 
 ---
 
@@ -26,7 +26,7 @@ This is the requirements specification for Clarion v0.1 — the *what*: capabili
 
 ### Relationship to Loom
 
-Clarion is one product in the **Loom** suite (see `docs/loom.md` for the family's founding doctrine). These requirements respect the Loom federation axiom: Clarion must be useful standalone, must compose pairwise with each sibling product, and must never become load-bearing for another product's semantics. That posture is formalised in `CON-LOOM-01`.
+Clarion is one product in the **Loom** suite (see [../../suite/loom.md](../../suite/loom.md) for the family's founding doctrine). These requirements respect the Loom federation axiom: Clarion must be useful standalone, must compose pairwise with each sibling product, and must never become load-bearing for another product's semantics. That posture is formalised in `CON-LOOM-01`.
 
 ### Design principles (framing, not numbered requirements)
 
@@ -40,7 +40,7 @@ The five design principles from the detailed-design frame the specific requireme
 
 ### Glossary
 
-See `2026-04-17-clarion-v0.1-detailed-design.md` Appendix B. Terms used here without explanation are defined there.
+See [detailed-design.md](./detailed-design.md) Appendix B. Terms used here without explanation are defined there.
 
 ---
 
@@ -572,7 +572,7 @@ When Filigree's `registry_backend` flag is set to `clarion`, Clarion serves as F
 
 **Rationale**: File-registry displacement is the cleanest expression of "Clarion owns structural truth" (per Loom federation). The shadow-registry fallback preserves v0.1 shipability when Filigree hasn't yet landed `registry_backend`.
 **Verification**: Mock Filigree with flag set → Clarion serves `GET /api/v1/entities/resolve?scheme=file_path` in response to Filigree resolution calls; flag absent → shadow mode, compat report flags degradation.
-**See**: System Design §9 (Integrations, Filigree — Registry), §11.1.
+**See**: System Design §9 (Integrations, Filigree — Registry), §11 (Suite Bootstrap, Prerequisites named here).
 
 #### REQ-INTEG-FILIGREE-04 — `scan_source` namespace + schema pin test
 
@@ -602,7 +602,7 @@ Clarion's Python plugin imports `wardline.core.registry.REGISTRY` at startup and
 
 **Rationale**: Direct import is cheaper than file-descriptor reading and avoids a vocabulary-drift window where two tools have different understandings of decorator semantics. Version pinning plus mirror fallback preserves operation when skew occurs.
 **Verification**: Matching version → normal operation; additive skew → warning; major skew → mirror mode.
-**See**: System Design §2 (Python plugin, Wardline integration), §11.2.
+**See**: System Design §2 (Core / Plugin Architecture, Direct REGISTRY import), §11 (Suite Bootstrap, Prerequisites named here).
 
 #### REQ-INTEG-WARDLINE-02 — Manifest + overlay ingest
 
@@ -756,7 +756,7 @@ Clarion core distributes as a single native binary per target (Linux x86_64, Lin
 
 **Rationale**: Principle 1 (enterprise at lack of scale). Small teams don't have platform engineers; "download and run" is the deployment target. Dynamic dependencies re-introduce the platform-team problem.
 **Verification**: Binary on each target runs on a fresh install without installing additional dependencies; startup succeeds.
-**See**: System Design (Appendix C — Rust stack, rustls / bundled SQLite).
+**See**: [detailed-design.md](./detailed-design.md) Appendix C (Rust stack), System Design §12 (Architecture Decisions — ADR-001).
 
 #### NFR-OPS-02 — Local-first; no cloud dependency
 
@@ -892,7 +892,7 @@ Clarion's plugin verifies `wardline.core.registry.REGISTRY_VERSION` against a pi
 
 **Rationale**: Wardline's REGISTRY is the shared decorator vocabulary; skew produces incorrect Wardline-derived guidance and detection gaps. Version-pinning with graceful degradation matches the prod reality that install versions don't always match.
 **Verification**: Unit test with pinned version succeeds; test with mismatched version produces expected finding.
-**See**: System Design §2 (Python plugin, Wardline integration), §11.2.
+**See**: System Design §2 (Core / Plugin Architecture, Direct REGISTRY import), §11 (Suite Bootstrap, Prerequisites named here).
 
 #### NFR-COMPAT-03 — Anthropic SDK version pin
 
@@ -912,9 +912,9 @@ External limits that shape what Clarion v0.1 can do.
 
 Clarion v0.1 must satisfy the Loom federation axiom: useful standalone, composable pairwise with each sibling product, and enrich-only with respect to sibling data. Sibling absence must never change the *meaning* of Clarion's own data; reduced capability is acceptable, altered semantics is not.
 
-**Rationale**: Founding doctrine of the Loom suite (`docs/loom.md` §5). Violating it collapses federation into monolith.
+**Rationale**: Founding doctrine of the Loom suite ([../../suite/loom.md](../../suite/loom.md) §5). Violating it collapses federation into monolith.
 **Verification**: Clarion operates meaningfully with `--no-filigree` and `--no-wardline` (reduced capability, coherent semantics); briefings and catalog structure are unchanged by sibling presence.
-**See**: `docs/loom.md`, System Design §1 (Context & Boundaries), §11 (Suite Bootstrap).
+**See**: [../../suite/loom.md](../../suite/loom.md), System Design §1 (Context & Boundaries), §11 (Suite Bootstrap).
 
 ### CON-FILIGREE-01 — Use Filigree's native scan-results intake (not SARIF)
 
@@ -928,14 +928,14 @@ Clarion emits findings to Filigree via `POST /api/v1/scan-results` using Filigre
 Clarion v0.1's "Clarion owns the file registry" claim depends on Filigree shipping a `registry_backend` config flag + pluggable `RegistryProtocol`. Absent the flag, Clarion operates in shadow-registry mode (downgrade to "owns the entity catalog").
 
 **Rationale**: Filigree's four NOT-NULL `file_records(id)` foreign keys + three auto-create paths make the displacement a schema surgery, not a feature flag. Degraded mode preserves v0.1 shipability; full integration depends on Filigree's cadence.
-**See**: System Design §11.1.
+**See**: System Design §11 (Suite Bootstrap, Prerequisites named here).
 
 ### CON-WARDLINE-01 — Wardline owns its REGISTRY
 
 Clarion consumes Wardline's `wardline.core.registry.REGISTRY` and `REGISTRY_VERSION` via direct Python import in v0.1. Wardline's decorator vocabulary is authoritative; Clarion does not redefine it, override it, or ship a parallel vocabulary.
 
 **Rationale**: Principle 5 (observe vs. enforce); Wardline is authoritative for trust-topology vocabulary. Respecting this keeps the suite coherent.
-**See**: System Design §2 (Python plugin), §11.2.
+**See**: System Design §2 (Core / Plugin Architecture, Direct REGISTRY import), §11 (Suite Bootstrap, Prerequisites named here).
 
 ### CON-ANTHROPIC-01 — Anthropic-only LLM provider in v0.1
 
@@ -956,7 +956,7 @@ Clarion v0.1 runs entirely on the operator's machine. No mandatory cloud service
 Clarion's core is implemented in Rust. This is a directive (ADR-001) and not subject to alternatives analysis.
 
 **Rationale**: Primary author's directive. Consequences (single-binary ship, mature ecosystem, plugin interop via subprocess, higher recruiting bar) are accepted.
-**See**: System Design §12 (Architecture Decisions — ADR-001), detailed-design §14 (ADR-001 note).
+**See**: System Design §12 (Architecture Decisions — ADR-001), [../adr/ADR-001-rust-for-core.md](../adr/ADR-001-rust-for-core.md).
 
 ### CON-SQLITE-01 — SQLite is the v0.1 store
 
@@ -1009,7 +1009,7 @@ Clarion does not offer a hosted deployment, a cloud-managed service, or multi-te
 
 ### NG-07 — Not a change executor (Shuttle's territory)
 
-Clarion does not execute code changes, propose edits, apply patches, or run tests as part of an edit workflow. Transactional scoped change execution is Shuttle's territory (see `docs/loom.md`), not Clarion's.
+Clarion does not execute code changes, propose edits, apply patches, or run tests as part of an edit workflow. Transactional scoped change execution is Shuttle's territory (see [../../suite/loom.md](../../suite/loom.md)), not Clarion's.
 
 **Why**: Loom federation — Shuttle, when built, owns this domain. Clarion observes; Shuttle executes.
 

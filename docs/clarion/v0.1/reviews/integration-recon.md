@@ -1,10 +1,12 @@
 # Clarion v0.1 Integration Reconnaissance
 
 **Reviewed document**: `2026-04-17-clarion-v0.1-design.md` (Revision 2)
-**Companion review**: `2026-04-17-clarion-v0.1-design-review.md`
+**Companion review**: [design-review.md](./design-review.md)
 **Recon date**: 2026-04-17
 **Method**: Read-only static analysis of `/home/john/filigree` and `/home/john/wardline`, run in five parallel focused sweeps (scan-results intake, file registry, Wardline annotations, Wardline SARIF & entity model, cross-tool flows). Every claim in this document is file:line-cited or declared as an absence-verified negative.
 **Verdict**: **Design revision is required before the implementation plan.** Two assertions are factually wrong (finding-field names, Wardline group 9/12/13 declaration path), one major architectural premise is unsupported by code today (Wardline as an HTTP consumer of Clarion), and the suite's cross-tool fabric is mostly aspirational — Clarion v0.1 will be *creating* the integration surface, not *joining* it.
+
+**Historical note**: this reconnaissance evaluates the pre-restructure single-file design at revision 2. The current canonical Clarion v0.1 docset lives in [../README.md](../README.md).
 
 ---
 

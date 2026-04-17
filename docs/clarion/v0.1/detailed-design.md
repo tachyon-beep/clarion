@@ -7,10 +7,10 @@
 **Revision**: 5 (post docs-restructure 2026-04-17; see Appendix D for revision history)
 
 **Companion documents**:
-- `2026-04-17-clarion-v0.1-requirements.md` — requirements (the *what*; REQ-* / NFR-* / CON-* / NG-*)
-- `2026-04-17-clarion-v0.1-system-design.md` — system design (the *how*, mid-level; architecture, mechanisms, diagrams)
-- `2026-04-17-clarion-v0.1-design-review.md` — design review that drove revisions 2-4
-- `2026-04-17-clarion-integration-recon.md` — integration reality check against Filigree / Wardline
+- [requirements.md](./requirements.md) — requirements (the *what*; REQ-* / NFR-* / CON-* / NG-*)
+- [system-design.md](./system-design.md) — system design (the *how*, mid-level; architecture, mechanisms, diagrams)
+- [reviews/design-review.md](./reviews/design-review.md) — design review that drove revisions 2-4
+- [reviews/integration-recon.md](./reviews/integration-recon.md) — integration reality check against Filigree / Wardline
 
 ---
 
@@ -26,7 +26,7 @@ Material covering *what Clarion does* (capabilities, quality attributes, non-goa
 
 ### When to read what
 
-- **Starting fresh on Clarion?** Read `suite-briefing.md` + `loom.md` first, then requirements + system-design in that order. This document fills in detail only when you're ready to implement or debug a specific subsystem.
+- **Starting fresh on Clarion?** Read [../../suite/briefing.md](../../suite/briefing.md) + [../../suite/loom.md](../../suite/loom.md) first, then [requirements.md](./requirements.md) + [system-design.md](./system-design.md) in that order. This document fills in detail only when you're ready to implement or debug a specific subsystem.
 - **Answering "what does Clarion guarantee?"** Requirements.
 - **Answering "how is it structured?"** System design.
 - **Answering "what's the exact `busy_timeout`? What's the full Phase-7 rule ID list? Which ADR says what?"** Here.
@@ -1376,7 +1376,7 @@ Clarion v0.1 is not joining an existing Loom fabric — it is the work that weav
 
 1. **Cross-tool test fixtures** (§10 Acceptance). Mock Filigree HTTP server (Rust, `wiremock`), Wardline SARIF corpus (committed slice of real output), schema-pin tests. All three tools benefit; naming authority probably sits in Clarion's repo in v0.1, graduating to its own fixture repo if the suite adds a fourth tool.
 
-2. **ADR cross-tool coordination**. Wardline ADRs already reference Filigree issue IDs by string (recon found `wardline-63255c8d5a` cited in `ADR-006-sarif-suppress-as-native-suppression.md:280-281`). Clarion ADRs will similarly reference Wardline and Filigree issues. There's no programmatic cross-repo link; a `docs/adr/cross-tool-index.md` per repo is a cheap lightweight index.
+2. **ADR cross-tool coordination**. Wardline ADRs already reference Filigree issue IDs by string (recon found `wardline-63255c8d5a` cited in `ADR-006-sarif-suppress-as-native-suppression.md:280-281`). Clarion ADRs will similarly reference Wardline and Filigree issues. There's no programmatic cross-repo link; a lightweight cross-tool index in each repo's ADR folder would be a cheap way to keep those references discoverable.
 
 3. **Suite release choreography**. The `registry_backend` flag must land in Filigree before Clarion v0.1 ships; the `REGISTRY_VERSION` export must be stable in Wardline before Clarion v0.1 ships; Clarion's SARIF translator must ship alongside v0.1 rather than later. A three-tool coordinated release plan belongs in the implementation plan, not this design document, but is named here so it doesn't become emergent.
 
@@ -1482,7 +1482,7 @@ Every failure produces either a finding or a run-stats entry. `CLA-INFRA-*` rule
 
 ## 11. Architecture Decisions
 
-Decisions in this design are load-bearing enough that they deserve explicit Architecture Decision Records (ADRs) rather than prose burial. Authoring those records — one markdown file per decision, in `docs/adr/` — is a blocker for the implementation plan (P0 entries below) or parallel to early implementation (P1–P2). The ADR format is short: **context, decision, alternatives considered, consequences, status**.
+Decisions in this design are load-bearing enough that they deserve explicit Architecture Decision Records (ADRs) rather than prose burial. Authored ADRs live in [../adr/README.md](../adr/README.md); backlog items that have not yet been written as standalone files remain tracked here. The ADR format is short: **context, decision, alternatives considered, consequences, status**.
 
 ### ADR backlog
 
@@ -1534,7 +1534,7 @@ Once all three systems (Clarion, Wardline, Filigree) are proven and their integr
 This is deliberate. Premature unification would:
 - Force the three tools' data shapes to converge before we know whether convergence helps.
 - Couple release cadence (schema migrations in one tool affect all three).
-- Compromise the "each tool is independently useful" property — directly violating the Loom federation axiom (`docs/loom.md` §3).
+- Compromise the "each tool is independently useful" property — directly violating the Loom federation axiom ([../../suite/loom.md](../../suite/loom.md) §3).
 
 When (or if) unification makes sense, v0.1's design does not foreclose it:
 - All three tools speak SQLite; a unified layer could federate across files or migrate to a shared schema.
@@ -1687,7 +1687,7 @@ Revision 5 (2026-04-17) restructures the single design document into a three-lay
 | Filename renamed `clarion-v0.1-design.md` → `clarion-v0.1-detailed-design.md` via `git mv` (history preserved via `git log --follow`) | Removes ambiguity between "the design doc" and the new `system-design.md` |
 | Abstract, Design Principles, process/UX topology, conceptual data model, core/plugin split narrative, integration posture, security threat model, suite-bootstrap architecture, §12 Explicit Deferrals, and §1 "What Clarion is NOT" moved to higher layers (requirements or system-design) | Higher layers serve those abstractions better; this document focuses on implementation detail |
 | Retained: full SQL schema, complete `clarion.yaml` example, exact Phase-7 rule catalogue with thresholds, full MCP tool list, severity mapping tables, `scan_run_id` lifecycle, dedup collision policy, commit-ref/dirty-tree handling, SARIF translator detail, Wardline state-file table, HTTP endpoint list, token-auth full spec, operator-guidance security subsection, §11 Suite Bootstrap prerequisite detail, testing/observability/acceptance, full ADR backlog, appendices | These are the implementation details that don't belong in higher layers |
-| Suite naming aligned: "three-tool suite" framing replaced by "Loom suite" / "Loom fabric" references, with `docs/loom.md` as the canonical doctrine source | Loom is now the family name; see `docs/loom.md` for federation axiom and composition law |
+| Suite naming aligned: "three-tool suite" framing replaced by "Loom suite" / "Loom fabric" references, with `docs/suite/loom.md` as the canonical doctrine source | Loom is now the family name; see [../../suite/loom.md](../../suite/loom.md) for federation axiom and composition law |
 | Section numbering renumbered 1-11 (not gapped) to match the document's reduced scope | Readers don't encounter gaps in numbering; cleaner navigation |
 
 ### Rev 4 changes (from follow-up review, 2026-04-17)

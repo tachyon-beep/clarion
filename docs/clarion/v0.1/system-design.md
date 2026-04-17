@@ -4,9 +4,9 @@
 **Date**: 2026-04-17
 **Primary author**: qacona@gmail.com (with Claude)
 **Companion documents**:
-- `2026-04-17-clarion-v0.1-requirements.md` — requirements (the *what*)
-- `2026-04-17-clarion-v0.1-detailed-design.md` — detailed design reference (implementation-level)
-- `docs/loom.md` — Loom family doctrine (federation axiom, composition law, go/no-go test)
+- [requirements.md](./requirements.md) — requirements (the *what*)
+- [detailed-design.md](./detailed-design.md) — detailed design reference (implementation-level)
+- [../../suite/loom.md](../../suite/loom.md) — Loom family doctrine (federation axiom, composition law, go/no-go test)
 
 ---
 
@@ -21,7 +21,7 @@ This is Clarion v0.1's **system design** at mid-level technical depth. It descri
 - Each section begins with an `Addresses:` header naming the requirements it satisfies. This is the unidirectional trace target for the requirements doc's `See:` lines.
 - Diagrams use Mermaid (rendered natively on GitHub).
 - Numbered sections follow the subsystem decomposition from the detailed-design, preserving navigation continuity across the three layers.
-- ADRs are summarised in §12; full text is in the detailed-design §14.
+- ADRs are summarised in §12; authored ADR files live in [../adr/README.md](../adr/README.md). Unauthored backlog entries remain summarised here and in the detailed design.
 
 ### Layered docs
 
@@ -29,7 +29,7 @@ Requirements (what), system-design (how, mid-level), detailed-design (implementa
 
 ### Loom framing
 
-Clarion is one product in the Loom suite (see `docs/loom.md`). Every integration in this design satisfies the Loom federation axiom — Clarion is useful standalone, composes pairwise with each sibling, and is enrich-only with respect to sibling data. Sibling absence reduces Clarion's capability; it does not alter Clarion's semantics.
+Clarion is one product in the Loom suite (see [../../suite/loom.md](../../suite/loom.md)). Every integration in this design satisfies the Loom federation axiom — Clarion is useful standalone, composes pairwise with each sibling, and is enrich-only with respect to sibling data. Sibling absence reduces Clarion's capability; it does not alter Clarion's semantics.
 
 ---
 
@@ -65,7 +65,7 @@ flowchart LR
     class Shuttle proposed
 ```
 
-Integration is narrow, additive, and point-to-point. No shared runtime, no shared store, no central orchestrator — integration is what the federation axiom (`docs/loom.md` §3-§6) permits and nothing more.
+Integration is narrow, additive, and point-to-point. No shared runtime, no shared store, no central orchestrator — integration is what the federation axiom ([../../suite/loom.md](../../suite/loom.md) §3-§6) permits and nothing more.
 
 ### Process topology
 
@@ -917,7 +917,7 @@ See §11 and `CON-FILIGREE-02`.
 
 Observations created from `clarion analyze` (auto-generated on Wardline-derived guidance events, etc.) and from `clarion serve` MCP `emit_observation` tool go to Filigree.
 
-- **Preferred**: `POST /api/v1/observations` (Filigree-side HTTP endpoint — a v0.1 prerequisite, §11.1).
+- **Preferred**: `POST /api/v1/observations` (Filigree-side HTTP endpoint — a v0.1 prerequisite, see §11 "Prerequisites named here").
 - **Fallback**: MCP client (Clarion spawns `filigree mcp` as subprocess). Adds dependency weight to Clarion; the fallback is the "if Filigree hasn't shipped the HTTP endpoint yet" path. Emits `CLA-INFRA-FILIGREE-OBS-VIA-MCP` in the compat report.
 
 #### Schema compatibility
@@ -928,7 +928,7 @@ CI runs a schema-pin test against a tagged Filigree release's `GET /api/files/_s
 
 #### `metadata` nesting convention
 
-Clarion → `metadata.clarion.*`. Wardline SARIF-translated findings → `metadata.wardline_properties.*`. A future tool (e.g., `cov`) would nest under `metadata.cov.*`. Published in Filigree docs to prevent collisions (v0.1 prerequisite, §11.1).
+Clarion → `metadata.clarion.*`. Wardline SARIF-translated findings → `metadata.wardline_properties.*`. A future tool (e.g., `cov`) would nest under `metadata.cov.*`. Published in Filigree docs to prevent collisions (v0.1 prerequisite, see §11 "Prerequisites named here").
 
 ### Wardline
 
@@ -952,7 +952,7 @@ Clarion's Python plugin imports `wardline.core.registry.REGISTRY` at startup (re
 - Additive-newer (same major, same or higher minor) → proceed with warning; decorators in the installed REGISTRY not in Clarion's pin detected with `confidence_basis: "clarion_augmentation"`.
 - Major-bump or older → fall back to hardcoded registry mirror (`wardline_registry_v<pin>.py`); emit `CLA-INFRA-WARDLINE-REGISTRY-MIRRORED`; findings carry `confidence_basis: "mirror_only"`.
 
-The YAML/JSON descriptor export of REGISTRY (enabling non-Python plugins) is a Wardline v0.2 prerequisite (§11.2, NG-25).
+The YAML/JSON descriptor export of REGISTRY (enabling non-Python plugins) is a Wardline v0.2 prerequisite (see §11 "Prerequisites named here", NG-25).
 
 #### SARIF → Filigree translator
 
@@ -1113,7 +1113,7 @@ Operator-guidance documentation lives in the detailed-design §10 for procedural
 
 Clarion v0.1 is not joining an existing Loom fabric — it is the work that weaves the fabric for the v0.1 suite of Clarion + Filigree + Wardline. The integration reconnaissance (`2026-04-17-clarion-integration-recon.md`) verified that cross-tool surface area the Rev-1 design assumed is mostly not yet implemented: Wardline has no HTTP client, Filigree has no `registry_backend` flag or pluggable file registry, no cross-tool fixtures exist.
 
-This section describes **Clarion's side** of the coordination: the capability-probe it runs at every analyse, the degraded modes it falls back into when sibling capabilities are absent, and what Clarion asks of sibling products as prerequisites. Per the Loom federation axiom (`docs/loom.md` §3, §6), there is **no central orchestrator** — each product handles its own integration surface, and sibling absence is a graceful degradation, not a failure.
+This section describes **Clarion's side** of the coordination: the capability-probe it runs at every analyse, the degraded modes it falls back into when sibling capabilities are absent, and what Clarion asks of sibling products as prerequisites. Per the Loom federation axiom ([../../suite/loom.md](../../suite/loom.md) §3, §6), there is **no central orchestrator** — each product handles its own integration surface, and sibling absence is a graceful degradation, not a failure.
 
 ### Capability negotiation at `clarion analyze` startup
 
@@ -1162,7 +1162,7 @@ The degraded modes exist so Clarion ships on its own timeline, not the slowest o
 
 ### Why no central orchestrator
 
-Per `docs/loom.md` §6, Loom does not own a coordination runtime. Capability negotiation is point-to-point — Clarion probes Filigree and Wardline directly, each sibling exposes its own surfaces, no "Loom bus" mediates. This section *is* that posture, expressed as Clarion's own behaviour.
+Per [../../suite/loom.md](../../suite/loom.md) §6, Loom does not own a coordination runtime. Capability negotiation is point-to-point — Clarion probes Filigree and Wardline directly, each sibling exposes its own surfaces, no "Loom bus" mediates. This section *is* that posture, expressed as Clarion's own behaviour.
 
 If a future requirement emerged for "what if more tools join the suite and the probe matrix explodes?", the answer per the federation axiom is not "build a shared registry" — it is "each joining tool implements its own probe; each existing tool adds handling for it." That keeps the pairwise composition rule honest even as the suite grows.
 
@@ -1170,7 +1170,7 @@ If a future requirement emerged for "what if more tools join the suite and the p
 
 ## 12. Architecture Decisions
 
-**Addresses**: canonical record of load-bearing design decisions. Summaries here; full ADR text (context, decision, alternatives, consequences, status) lives in the detailed-design §14.
+**Addresses**: canonical record of load-bearing design decisions. Summaries here; authored ADR files live in [../adr/README.md](../adr/README.md), while backlog-only items remain summarised here and in the detailed design.
 
 ### ADR summaries (P0 + P1)
 
@@ -1201,7 +1201,7 @@ If a future requirement emerged for "what if more tools join the suite and the p
 
 ADR-002 through ADR-004 must exist as markdown files before the implementation plan is authored (P0). ADR-005 through ADR-013 are written alongside early implementation (P1). Any decision reversal during implementation (e.g., "writer-actor doesn't work; switching to shadow-DB") requires a new dated ADR revision, not an edit to the original.
 
-Full ADR text (context, decision, alternatives considered, consequences, status) lives in detailed-design §14. These summaries are the navigation aid; the canonical record of decisions (and the audit trail for why they were made) is the ADR collection itself.
+Authored ADR text (context, decision, alternatives considered, consequences, status) lives in [../adr/README.md](../adr/README.md). These summaries are the navigation aid; the canonical record of completed decisions is the ADR collection itself.
 
 ---
 

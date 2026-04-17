@@ -2,7 +2,7 @@
 
 **Audience**: anyone designing, extending, or evaluating whether a new product belongs in the Loom family
 **Purpose**: establishes the strategic direction, composition law, and go/no-go test that govern Loom as a suite
-**Companion**: `suite-briefing.md` for an introductory 5-minute read
+**Companion**: [briefing.md](./briefing.md) for an introductory 5-minute read
 
 ---
 

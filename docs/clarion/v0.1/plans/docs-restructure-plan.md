@@ -1,9 +1,11 @@
 # Clarion v0.1 Documentation Restructure — Design Spec
 
-**Status**: plan, ready for execution
+**Status**: historical plan — implemented in the current `docs/` layout
 **Date**: 2026-04-17
 **Primary author**: qacona@gmail.com (with Claude)
 **Type**: meta-spec (plans document-level restructure, not code)
+
+**Historical note**: this plan was written against the old flat `docs/` layout. The executed structure now lives under [../../README.md](../../README.md) and [../README.md](../README.md). Path references below have been normalized to the executed layout except where the pre-restructure single-file design is being discussed as historical context.
 
 ---
 
@@ -31,7 +33,7 @@ Decisions locked during the 2026-04-17 brainstorming session:
 | 8 | Diagrams | Mermaid primary, ASCII for trivial cases |
 | 9 | Traceability | Unidirectional: REQ → design section, via `See:` line per requirement |
 | 10 | Suite naming | Loom is the family name; Shuttle is the proposed fourth product |
-| 11 | Loom doc location | `docs/loom.md` (plain, not `-charter.md`) |
+| 11 | Loom doc location | `docs/suite/loom.md` (plain, not `-charter.md`) |
 
 ---
 
@@ -39,13 +41,13 @@ Decisions locked during the 2026-04-17 brainstorming session:
 
 | File | Action | Role |
 |---|---|---|
-| `docs/loom.md` | create | Strategic-direction doc for the Loom family (short, doctrinal) |
-| `docs/suite-briefing.md` | patch | Rebrand to "Loom suite"; add Shuttle row to Current State table; link to `loom.md` |
-| `docs/superpowers/specs/2026-04-17-clarion-v0.1-requirements.md` | create | Layer 1 — the *what* |
-| `docs/superpowers/specs/2026-04-17-clarion-v0.1-system-design.md` | create | Layer 2 — the *how, mid-level* |
-| `docs/superpowers/specs/2026-04-17-clarion-v0.1-detailed-design.md` | rename + trim | Layer 3 — implementation-only reference (was `clarion-v0.1-design.md`) |
-| `docs/superpowers/specs/2026-04-17-clarion-v0.1-design-review.md` | unchanged | Review that drove Rev 2-4; still valid |
-| `docs/superpowers/specs/2026-04-17-clarion-integration-recon.md` | unchanged | Reality-check against sibling tools; still valid |
+| `docs/suite/loom.md` | create | Strategic-direction doc for the Loom family (short, doctrinal) |
+| `docs/suite/briefing.md` | patch | Rebrand to "Loom suite"; add Shuttle row to Current State table; link to `loom.md` |
+| `docs/clarion/v0.1/requirements.md` | create | Layer 1 — the *what* |
+| `docs/clarion/v0.1/system-design.md` | create | Layer 2 — the *how, mid-level* |
+| `docs/clarion/v0.1/detailed-design.md` | rename + trim | Layer 3 — implementation-only reference (was `clarion-v0.1-design.md`) |
+| `docs/clarion/v0.1/reviews/design-review.md` | unchanged | Review that drove Rev 2-4; still valid |
+| `docs/clarion/v0.1/reviews/integration-recon.md` | unchanged | Reality-check against sibling tools; still valid |
 
 ---
 
@@ -149,7 +151,7 @@ Per brainstorming decisions 10-11 and the `project_loom_suite_naming.md` and `pr
 - Non-goals explicitly disclaim Shuttle's territory (transactional change execution, ordered edits, pre/post-change test gating, rollback, commit authoring)
 - §11 Suite Bootstrap in system-design frames as "Clarion's side of coordination" — no central orchestrator, per federation axiom
 
-**`docs/loom.md` structure** (~500-700 words, 8 sections):
+**`docs/suite/loom.md` structure** (~500-700 words, 8 sections):
 
 1. What Loom is
 2. The products and their authoritative domains (4 one-liners)
@@ -160,7 +162,7 @@ Per brainstorming decisions 10-11 and the `project_loom_suite_naming.md` and `pr
 7. Naming (weaving-adjacent proper names, no "Loom X" subdivisions)
 8. Status (v0.1 = three tools; Shuttle proposed)
 
-**`docs/suite-briefing.md` patch**: swap "three-tool suite" → "Loom suite," add Shuttle row to Current State table with `status: proposed`, one-sentence pointer to `loom.md`.
+**`docs/suite/briefing.md` patch**: swap "three-tool suite" → "Loom suite," add Shuttle row to Current State table with `status: proposed`, one-sentence pointer to `loom.md`.
 
 ---
 
@@ -169,16 +171,16 @@ Per brainstorming decisions 10-11 and the `project_loom_suite_naming.md` and `pr
 Each commit is a logical unit with its own user-review gate.
 
 ### Commit 1 — Loom framing
-- `docs/loom.md` (new, ~500-700 words)
-- `docs/suite-briefing.md` (patch)
+- `docs/suite/loom.md` (new, ~500-700 words)
+- `docs/suite/briefing.md` (patch)
 - **Rationale**: all downstream docs reference Loom; doing this first means no retroactive edits
 
 ### Commit 2 — Requirements doc
-- `docs/superpowers/specs/2026-04-17-clarion-v0.1-requirements.md` (new, ~3,500-5,000 words)
+- `docs/clarion/v0.1/requirements.md` (new, ~3,500-5,000 words)
 - **Rationale**: system-design references requirements; must exist first
 
 ### Commit 3 — System-design doc
-- `docs/superpowers/specs/2026-04-17-clarion-v0.1-system-design.md` (new, ~18-22k words)
+- `docs/clarion/v0.1/system-design.md` (new, ~18-22k words)
 - **Rationale**: references requirements; informs trim scope
 
 ### Commit 4 — Rename + trim detailed-design
@@ -191,8 +193,8 @@ Each commit is a logical unit with its own user-review gate.
 ## Acceptance per commit
 
 **Commit 1**:
-- `docs/loom.md` exists with 8 sections; 500-700 words; includes four products, federation axiom, go/no-go test
-- `docs/suite-briefing.md` uses "Loom suite" throughout; Current State table has Shuttle row; one-sentence link to `loom.md`
+- `docs/suite/loom.md` exists with 8 sections; 500-700 words; includes four products, federation axiom, go/no-go test
+- `docs/suite/briefing.md` uses "Loom suite" throughout; Current State table has Shuttle row; one-sentence link to `loom.md`
 - Both files commit-ready; no TBDs
 
 **Commit 2**:
@@ -229,7 +231,7 @@ Four filigree issues to be created — one per commit — with dependencies set 
 
 ## Deferred / out of scope
 
-- Writing the ADRs themselves as full text (stays as backlog in detailed-design §14; expected to be filled in during early Clarion implementation)
+- Writing the ADRs themselves as full text (now split between authored files in `docs/clarion/adr/` and the remaining backlog in detailed-design §11)
 - Any Clarion code
 - Any Shuttle design work (separate effort)
 - Filigree/Wardline changes named in §11 Suite Bootstrap (owned by those projects)
