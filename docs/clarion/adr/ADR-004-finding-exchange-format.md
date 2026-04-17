@@ -85,6 +85,8 @@ Specifically:
 ## Related Decisions
 
 - Related to: [ADR-003](./ADR-003-entity-id-scheme.md)
+- [ADR-014](./ADR-014-filigree-registry-backend.md) — `file_id` resolution in `registry_backend: clarion` mode produces the `file_id` field this ADR's wire format references.
+- [ADR-015](./ADR-015-wardline-filigree-emission.md) — the SARIF-to-Filigree-native translator maps SARIF inputs into this ADR's format; `metadata.<driver>_properties.*` namespacing is consistent with `metadata.clarion.*`.
 
 ## References
 

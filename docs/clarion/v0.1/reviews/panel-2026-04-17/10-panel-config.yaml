@@ -1,0 +1,618 @@
+---
+# Panel Review Config — Loom Suite Doctrine Documents
+# Generated: 2026-04-17
+# Designer: Persona Designer Agent (claude-sonnet-4-6)
+# Target documents: docs/suite/briefing.md, docs/suite/loom.md
+
+meta:
+  panel_id: loom-doctrine-2026-04-17
+  purpose: >
+    Audience-reaction testing for the two Loom positioning/doctrine documents.
+    Both are designed to land with a reader — they are not reference material.
+    The panel tests whether they land, with whom, and where they break.
+  document_count: 2
+  word_count_approximate: 3200  # briefing ~1800, loom ~1400
+
+# ─────────────────────────────────────────────────────────────
+# DOCUMENT SUITE
+# ─────────────────────────────────────────────────────────────
+
+documents:
+  - id: briefing
+    path: docs/suite/briefing.md
+    description: >
+      5-minute onboarding briefing. Introduces all four Loom products,
+      their roles, how they interact (data flows, identity scheme), and
+      current build status. Ends with a "where to read next" table.
+    line_count: 171
+    sections:
+      - "One-paragraph version"
+      - "The Loom products (Clarion, Filigree, Wardline, Shuttle)"
+      - "How they interact (fabric diagram, data flows, identity/vocabulary)"
+      - "Principles that shape the suite"
+      - "Current state (status table)"
+      - "Where to read next"
+
+  - id: loom
+    path: docs/suite/loom.md
+    description: >
+      Founding doctrine document. Establishes the federation axiom,
+      composition law (solo/pair/suite modes), enrichment-not-load-bearing
+      principle with failure test, explicit NOT-list, and go/no-go test
+      for future products.
+    line_count: 103
+    sections:
+      - "§1 What Loom is"
+      - "§2 Products and authoritative domains"
+      - "§3 Federation, not monolith"
+      - "§4 The composition law"
+      - "§5 Enrichment, not load-bearing (incl. failure test)"
+      - "§6 What Loom is NOT"
+      - "§7 Go/no-go test for future products"
+      - "§8 Naming"
+      - "§9 Status"
+
+# ─────────────────────────────────────────────────────────────
+# SCENARIO FRAMING
+# ─────────────────────────────────────────────────────────────
+
+scenario_framing:
+  proposed: true
+  rationale: >
+    Both documents are clearly authored for distribution to external or
+    semi-external readers (briefing.md says "engineers, reviewers, or
+    stakeholders new to the suite"; loom.md says "anyone designing,
+    extending, or evaluating whether a new product belongs in the Loom
+    family"). They are positioning pieces — their job is to persuade and
+    orient, not to serve as reference. A scenario framing is warranted.
+
+  issuing_authority: >
+    The Loom suite project (solo author / small team). No enterprise
+    imprimatur. The author is writing to potential adopters, contributors,
+    and future collaborators — not to an internal audience that already
+    knows the project.
+
+  version_status: >
+    Pre-public, pre-implementation (Clarion not yet built, Shuttle not
+    even started). The documents describe what is intended and what exists,
+    but the reader cannot yet validate claims by installing or running
+    anything beyond Filigree and Wardline.
+
+  distribution_channel: >
+    Docs-only repository, read via GitHub or equivalent. Readers arrive via
+    a README link, a colleague recommendation, or their own search. Reading
+    is typically solitary, unscheduled, and interruptible.
+
+  expected_engagement: >
+    Briefing: read in one sitting (~5 min) by someone deciding whether to
+    invest further time. Loom: read more carefully by someone who has
+    already decided the suite is interesting and wants to evaluate whether
+    the design philosophy is sound or adoptable.
+
+  reading_order:
+    recommended: briefing_first
+    rationale: >
+      briefing.md is the canonical first read (the suite/README.md says
+      so explicitly, and briefing.md is self-described as the "5-minute
+      introduction"). loom.md is the doctrine that briefing.md links to
+      for depth. A reader who encounters loom.md first lacks the product
+      vocabulary (Clarion, Wardline, Filigree, Shuttle) needed to evaluate
+      the composition examples in §5. briefing.md builds that vocabulary in
+      the first three sections.
+
+      Exception: the competing-tool author (persona 5) may start with
+      loom.md because they are hunting for architectural claims, not
+      learning product names. The panel includes a note to that effect.
+
+# ─────────────────────────────────────────────────────────────
+# PERSONAS
+# ─────────────────────────────────────────────────────────────
+
+personas:
+
+  - id: p1-infra-skeptic
+    priority: 1
+    archetype: talked_about_but_not_talked_to
+    name: "Priya"
+    role: Senior Platform / Infrastructure Engineer
+    directory_name: p1-infra-skeptic
+
+    lens: >
+      Has been burned by "federated tool suites" that quietly became
+      monoliths by v2. Reads architectural claims with adversarial patience.
+      Pattern-matches on: shared runtime, shared store, shared config,
+      capability negotiation bus. Has low tolerance for vocabulary that
+      obscures coupling.
+
+    background: >
+      8 years in platform engineering at two mid-size SaaS companies.
+      Lived through a "modular" internal toolchain that by v3 had a
+      central orchestrator, a shared Postgres, and three products that
+      stopped making sense without each other. Now at a 40-person startup,
+      she evaluates any new tooling by asking "what does this look like
+      when I need to rip out half of it?"
+
+    reading_behaviour: >
+      Skips intro prose. Goes straight to diagrams and the NOT-list.
+      Reads data-flow tables line by line. Re-reads any sentence containing
+      "enrich," "enrich-only," or "enrichment" twice — that kind of
+      language has been used to smuggle in coupling before. Scans the
+      status table late, not early.
+
+    key_question: >
+      Is the "enrichment, not load-bearing" principle actually enforced in
+      the design, or is it aspirational wording that will erode by v0.2?
+
+    blind_spots:
+      - Does not care about developer experience or onboarding story.
+      - Assumes the worst about naming conventions and metaphors — "weaving"
+        reads as marketing, not architecture, and she discounts it.
+      - May miss the genuine novelty of the go/no-go test (§7) because she
+        is focused on what the suite is today, not its governance model.
+
+    voice_sample: >
+      "OK, so the fabric diagram shows Wardline writing files that Clarion
+      reads at analyze time. That's a file-level dependency, not a runtime
+      dependency — fine. But then Clarion emits to Filigree's POST endpoint.
+      That means if Filigree is down, Clarion either fails silently or
+      queues somewhere. Where does it queue? I don't see that answered."
+
+    consultation_voice: >
+      "What's the exact failure behaviour when Filigree's endpoint is
+      unavailable during a Clarion analyze run? What does '--no-filigree'
+      actually suppress — the POST, or also the findings cache?"
+
+  - id: p2-cto-evaluator
+    priority: 2
+    archetype: decision_maker
+    name: "Marcus"
+    role: CTO / VP Engineering (40-80 person company)
+    directory_name: p2-cto-evaluator
+
+    lens: >
+      Evaluating whether to invest team time in adopting the Loom suite
+      or contributing to Clarion. Has 10 minutes, not 2 hours. Cares about:
+      what is actually working today, what the adoption cost is, and whether
+      the project has a coherent design philosophy or is spec-driven
+      vaporware.
+
+    background: >
+      Engineering leader at a growth-stage SaaS company (~60 engineers).
+      Previously a staff engineer, now manages two platform teams. Skims
+      a lot of tooling docs and has developed a filter: he reads the
+      "current state" section before anything else, then the principles,
+      then decides whether to pass it to his team. Does not read design
+      philosophy docs in full unless the current-state passes his filter.
+
+    reading_behaviour: >
+      Jumps to the status table in briefing.md first. If Clarion is not
+      yet built, assesses whether the described design philosophy earns
+      future investment. Reads loom.md §3-§5 to check if the architecture
+      is sound. Will not read further if the design philosophy strikes him
+      as either naive or over-engineered.
+
+    key_question: >
+      Is this a coherent, trustworthy design that a small team can adopt
+      incrementally, or is it a paper architecture that requires buying in
+      fully before any return?
+
+    blind_spots:
+      - Not tracking the technical detail of data flows — those are for
+        his senior engineers to evaluate.
+      - May not engage with the go/no-go test (§7) unless he is
+        specifically evaluating whether to propose a new product himself.
+      - Will not notice vocabulary precision failures unless they affect
+        his ability to explain the tool to his team.
+
+    voice_sample: >
+      "Filigree is live and Wardline is live — good. Clarion is designed
+      but not built. So the 'suite' right now is two tools, not three.
+      That's fine, but the briefing leads with 'three independent tools
+      that enrich one another' — I'd prefer 'two tools in production, one
+      in design.' The positioning slightly oversells the current state."
+
+    consultation_voice: >
+      "Is there a migration or adoption path that starts with just
+      Filigree and adds Clarion later without rework? And what does
+      'local-first, single-binary, git-committable state' mean for a
+      team that already has a shared CI environment?"
+
+  - id: p3-compliance-eng
+    priority: 3
+    archetype: technical_validator
+    name: "Yasmin"
+    role: Security / Compliance Engineer
+    directory_name: p3-compliance-eng
+
+    lens: >
+      Cares about: how findings flow, who owns what data, whether audit
+      trails are durable, and what happens to findings when tools are
+      partially deployed. The "findings are facts, not just errors"
+      principle and the Finding record type are directly in her wheelhouse.
+      Wardline's trust-tier model is also something she will scrutinise.
+
+    background: >
+      Security engineer at a regulated SaaS company (SOC 2 Type II). Has
+      spent 18 months building internal tooling to track scan findings from
+      five different scanners (SAST, SCA, secrets, IaC, custom). The main
+      pain is findings lifecycle — knowing which finding was triaged by
+      whom and why, and ensuring triage decisions are auditable. Reading
+      Loom to see if it solves a real version of that problem.
+
+    reading_behaviour: >
+      Reads both docs in order as documented. Pays close attention to the
+      data-flow table and the identity scheme section in briefing.md. In
+      loom.md, pauses at §5 (enrichment) to work through the Wardline
+      example carefully. Annotates in her head: "who owns the finding
+      after it crosses product boundaries?"
+
+    key_question: >
+      When Wardline emits a SARIF finding that Clarion translates and
+      posts to Filigree, who is authoritative for the finding's lifecycle
+      — and what happens to triage state if Clarion's translator produces
+      different output across versions?
+
+    blind_spots:
+      - Not evaluating the code-archaeology aspect of Clarion — the
+        entity catalog and structural queries are outside her concern.
+      - Will not engage with the naming conventions or weaving metaphor.
+      - May under-read the composition law (§4) because it reads as
+        product strategy rather than data governance.
+
+    voice_sample: >
+      "I see that Filigree preserves the metadata dict verbatim so
+      Wardline's SARIF property-bag extensions survive ingest under
+      namespaced keys. That's good. But the briefing says Clarion
+      'translates' Wardline SARIF — what's the fidelity guarantee on
+      that translation? If Wardline's schema changes, does Clarion
+      re-emit old findings with updated keys, or do I end up with two
+      different representations of the same finding in Filigree?"
+
+    consultation_voice: >
+      "What is the schema-compatibility contract for the
+      scan-results endpoint, and what is the versioning policy for
+      metadata keys (e.g., metadata.wardline_properties.*)?"
+
+  - id: p4-oss-contributor
+    priority: 4
+    archetype: hostile_reader
+    name: "Dev"
+    role: Open-Source Maintainer / Potential Contributor
+    directory_name: p4-oss-contributor
+
+    lens: >
+      Evaluating whether to invest time contributing to Clarion (the
+      unbuilt product). Has strong opinions about design-by-committee and
+      architecture documents that substitute for working code. Will test
+      whether the project's design philosophy can survive contact with
+      real implementation choices. Reads the go/no-go test (§7) as a
+      governance mechanism and evaluates its rigour.
+
+    background: >
+      Maintains a mid-sized OSS static analysis tool (~2k GitHub stars).
+      Has seen projects with beautiful doctrine docs that never shipped,
+      and projects with no docs that shipped great tools. Is genuinely
+      interested in Clarion's problem (code archaeology for LLM agents)
+      but suspicious that the Loom doctrine layer will add governance
+      overhead without adding value. Also evaluating whether the project's
+      solo-author structure means the doctrine is aspirational self-binding
+      or genuine architecture.
+
+    reading_behaviour: >
+      Reads loom.md first — skips briefing.md initially, returns to it
+      later to check consistency between the doctrine and the product
+      descriptions. Tests the go/no-go test (§7) against Shuttle: "does
+      Shuttle actually pass all four criteria as described?" Pays close
+      attention to what is deferred vs. what is decided.
+
+    key_question: >
+      Is the federation axiom a real architectural constraint that will
+      shape implementation decisions, or is it post-hoc rationalisation
+      that will be quietly violated when the first integration shortcut
+      presents itself?
+
+    blind_spots:
+      - Not evaluating Filigree or Wardline as adopter — evaluating Clarion
+        as a potential contributor.
+      - Will not engage with business framing ("enterprise-grade on small
+        teams") — filters it as marketing.
+      - May bring irrelevant comparisons from their own tool's architecture
+        that don't map cleanly to Loom's problem space.
+
+    voice_sample: >
+      "The go/no-go test for Shuttle says it must be 'useful by itself.'
+      But its sole defined job is executing change intents — who generates
+      the intent? If the intent always comes from a Filigree issue, Shuttle
+      isn't actually useful by itself; it's a feature of the Filigree
+      workflow that got a separate binary. The doctrine test may be
+      self-contradictory here."
+
+    consultation_voice: >
+      "If I wanted to contribute to Clarion's Python plugin specifically —
+      the entity extraction logic — what's the path? Is there a standalone
+      plugin test harness, or do I need the full Rust core running to test
+      plugin output?"
+
+  - id: p5-competing-author
+    priority: 5
+    archetype: hostile_reader
+    name: "Sam"
+    role: Competing Tool Author / Independent Developer
+    directory_name: p5-competing-author
+
+    lens: >
+      Reading to find weaknesses in the positioning, overreach in the
+      claims, and gaps between what is described and what is built. Will
+      compare explicitly or implicitly to their own tool's design
+      decisions. Not hostile in bad faith — genuinely curious — but will
+      not give the benefit of the doubt on ambiguous claims.
+
+    background: >
+      Author of a code-analysis tool in the same space (structural
+      analysis, query, maybe some LLM integration). Has followed the
+      static-analysis and code-governance space for 5 years. Reads new
+      entrants' docs when they appear on HN or a newsletter. Will
+      note where Loom's "enrichment, not load-bearing" principle solves
+      a problem that other suites have fumbled, and where it sidesteps
+      problems they've actually solved.
+
+    reading_behaviour: >
+      Reads loom.md first, not briefing.md. Focuses on §3-§6 (the claims).
+      Then reads briefing.md's data-flow section to see if the claims
+      survive contact with the implementation description. Will note the
+      gap between "three tools in production" (not true — one is designed,
+      not built) and the positioning.
+
+    key_question: >
+      Where does the "enrichment, not load-bearing" principle solve a
+      genuine problem that other approaches haven't, and where does it
+      paper over integration complexity by calling it "additive"?
+
+    blind_spots:
+      - May project their own tool's design constraints onto Loom's problem,
+        causing false-positive criticisms.
+      - Will not engage with the developer-experience or onboarding framing.
+      - The "enterprise-grade on small teams" positioning may read as
+        contradiction (enterprise means scale; small teams means not-scale)
+        without engaging with the actual argument.
+
+    voice_sample: >
+      "The data-flow table shows three identity schemes running
+      simultaneously — Clarion EntityId, Wardline qualname, Wardline
+      exception-register location string — with Clarion 'maintaining the
+      translation layer.' That's the pattern that always becomes the
+      secret monolith. The translation layer is load-bearing infrastructure
+      wearing a product name."
+
+    consultation_voice: >
+      "How does the entity ID scheme handle renames? If a Python class
+      is renamed, does its Clarion EntityId change? If so, all Filigree
+      issues referencing the old ID become orphaned — that's a significant
+      weakness in the 'stable symbolic identifier' claim."
+
+# ─────────────────────────────────────────────────────────────
+# PANEL CONFIGURATION
+# ─────────────────────────────────────────────────────────────
+
+panel_configuration:
+
+  control_persona:
+    id: p2-cto-evaluator
+    rationale: >
+      Marcus is the most predictable reader: his goal (evaluate adoption
+      feasibility) is clear, his reading path (status table first, then
+      principles) is stereotyped, and his key concern (what is actually
+      working today) is answerable from the text. This makes him ideal
+      for calibration. His reaction should be the most legible to audit
+      after the panel runs.
+    pre_registered_predictions:
+      expected_reading_path: >
+        [PREDICTION] Will locate the status table in briefing.md within
+        the first two minutes. Will then read loom.md §3-§5 if the status
+        table passes his filter. Will skip §7 (go/no-go) and §8 (naming).
+      expected_key_concern: >
+        [PREDICTION] The gap between the three-product framing and the
+        two-products-actually-running reality. Will note that the briefing
+        leads with "three independent tools that enrich one another" before
+        disclosing that Clarion is designed-not-built.
+      expected_verdict: >
+        [PREDICTION] Cautiously interested. Will pass the docs to a senior
+        engineer for the technical read, but will not dismiss. The local-
+        first, single-binary positioning will land well for his context.
+
+  unreliable_narrator:
+    id: p5-competing-author
+    rationale: >
+      Sam brings the most adversarial reading posture and the most domain
+      expertise. This combination produces plausible, technically-grounded
+      misconceptions — the kind that are hard to dismiss and hard to verify
+      without implementation.
+    misconception: >
+      Sam will likely read the Clarion identity translation layer
+      (Clarion EntityId / Wardline qualname / exception-register location
+      string) as evidence that Clarion is already load-bearing
+      infrastructure — a "secret monolith" by the doctrine's own failure
+      test. This reading is plausible but incomplete: the failure test
+      asks whether removing a sibling changes the meaning of another
+      product's data, not whether cross-scheme translation exists. Sam may
+      miss that the translation lives in Clarion and is Clarion's own
+      concern, not a shared layer. The documents do not foreclose this
+      reading cleanly.
+
+  persona_priority_order:
+    - rank: 1
+      id: p1-infra-skeptic
+      archetype: talked_about_but_not_talked_to
+      note: >
+        Priya is the most important reader the docs do not directly address.
+        The briefing addresses "engineers, reviewers, or stakeholders new to
+        the suite" — but Priya is not new to the suite's *type*; she's new
+        to this specific suite and arrives skeptical. Her reaction tests
+        whether the architecture claims survive adversarial reading.
+    - rank: 2
+      id: p2-cto-evaluator
+      archetype: decision_maker
+      note: >
+        Marcus holds the adoption decision. The docs need to pass his
+        10-minute filter.
+    - rank: 3
+      id: p5-competing-author
+      archetype: hostile_reader
+      note: >
+        Sam reads adversarially and has domain expertise. His misconception
+        is the most technically-grounded failure mode.
+    - rank: 4
+      id: p3-compliance-eng
+      archetype: technical_validator
+      note: >
+        Yasmin validates a specific technical claim (findings lifecycle and
+        cross-tool identity). If her questions are not answerable from the
+        docs, a real gap exists.
+
+  collision_test_pairings:
+    - pair: [p1-infra-skeptic, p5-competing-author]
+      tension: >
+        Both are adversarial readers, but from different angles. Priya
+        reads for runtime coupling and deployment fragility; Sam reads for
+        identity scheme weakness and positioning gaps. They may arrive at
+        the same criticism ("the translation layer is load-bearing") from
+        different directions. If they do, the criticism is structural,
+        not rhetorical.
+
+    - pair: [p2-cto-evaluator, p4-oss-contributor]
+      tension: >
+        Marcus cares about what is working today and incremental adoption.
+        Dev cares about whether the architecture will survive implementation.
+        They are evaluating the same documents for orthogonal decisions:
+        adoption vs. contribution. Where their concerns intersect (the
+        go/no-go test, the composition law) will reveal whether the doctrine
+        serves both audiences or only one.
+
+    - pair: [p3-compliance-eng, p1-infra-skeptic]
+      tension: >
+        Yasmin has the most specific technical question (findings lifecycle
+        across tool boundaries); Priya has the most general architectural
+        concern (enrichment-not-load-bearing as runtime vs. aspirational
+        constraint). If Priya's concern turns out to be Yasmin's concern
+        stated differently, the docs have a coherent blind spot.
+
+# ─────────────────────────────────────────────────────────────
+# PANEL GAPS AND DEFERRED PERSONAS
+# ─────────────────────────────────────────────────────────────
+
+panel_gaps:
+
+  deferred:
+    - name: "New Grad / Junior Engineer Asked to Onboard"
+      role: IC engineer, first week on a Clarion-adjacent team
+      lens: Reading to understand what they are being asked to work with
+      key_question: >
+        What do I actually install and run first? What's the smallest
+        loop I can complete to verify I understand the system?
+      exclusion_reason: >
+        The onboarding story is not tested by the doctrine docs —
+        briefing.md and loom.md explicitly do not substitute for
+        a getting-started guide (loom.md ends with a status table, not
+        a tutorial). A new-grad reader would be unsatisfied by both docs
+        regardless of their quality as doctrine, making her reaction
+        uninformative for panel purposes. Deferred to a future panel
+        targeting the v0.1/README.md reading path.
+
+    - name: "Filigree / Wardline Maintainer Reading a Sibling-Tool Spec"
+      role: Existing maintainer of one of the already-built Loom products
+      lens: >
+        Evaluating whether the Clarion spec creates obligations for them
+        (API contracts, versioning guarantees, breaking-change policy)
+      key_question: >
+        What does Clarion's design assume about Filigree's API that I
+        don't currently provide or guarantee?
+      exclusion_reason: >
+        This is the ideal reader for the integration-recon.md review
+        document, not briefing.md/loom.md. The doctrine docs are not the
+        right surface for contract evaluation. Partially covered by Yasmin
+        (p3-compliance-eng) from the consumer side. Excluding to avoid
+        panel budget being dominated by integration concerns.
+
+  explicit_gaps:
+    - gap: >
+        The documents reference "elspeth (~425k LOC Python)" as the first
+        Clarion customer. An elspeth team member — someone who will actually
+        run Clarion against their codebase and report whether it solved their
+        problem — would be the most grounded validator of the "enterprise-
+        grade on small teams" claim. I lack context to design a credible
+        persona for this audience. Consider adding one manually if an elspeth
+        team contact is available.
+
+    - gap: >
+        loom.md §7 (go/no-go test) reads as a governance mechanism for
+        the project author, but also as a signal to potential ecosystem
+        participants (e.g., a company that wants to build a Loom-compatible
+        tool). I could not identify a credible persona for "third-party tool
+        author seeking Loom compatibility" without more context about whether
+        the suite is intended to be open for ecosystem participation.
+        Consider adding one if ecosystem growth is a stated goal.
+
+# ─────────────────────────────────────────────────────────────
+# READING ORDER DIRECTIVE (FOR PERSONA-READER AGENTS)
+# ─────────────────────────────────────────────────────────────
+
+reading_order:
+  default:
+    - docs/suite/briefing.md
+    - docs/suite/loom.md
+  override:
+    - persona_id: p4-oss-contributor
+      order:
+        - docs/suite/loom.md
+        - docs/suite/briefing.md
+      rationale: >
+        Dev is characterised as reading loom.md first (hunting architectural
+        claims, not learning product names). Preserving that persona trait
+        requires reading loom.md before the vocabulary scaffold that
+        briefing.md provides. This will stress-test whether loom.md
+        is comprehensible without the briefing's product introductions.
+    - persona_id: p5-competing-author
+      order:
+        - docs/suite/loom.md
+        - docs/suite/briefing.md
+      rationale: >
+        Same rationale as p4-oss-contributor. Sam hunts positioning claims
+        in the doctrine first; the briefing is secondary validation.
+
+# ─────────────────────────────────────────────────────────────
+# OUTPUT FORMAT (FOR PERSONA-READER AGENTS)
+# ─────────────────────────────────────────────────────────────
+
+output_format:
+  per_persona:
+    - mood_journal: >
+        A running journal written in the persona's voice, timestamped by
+        document section (not wall-clock time). Records reactions as they
+        arise — confusion, satisfaction, skepticism, a question that is
+        not answered. This is the primary deliverable per persona.
+    - key_finding: >
+        One paragraph. The single most important thing this persona took
+        away (positive or negative) that would not be obvious to the
+        document's author.
+    - unanswered_questions: >
+        A short list (3-5 items) of questions the persona formed while
+        reading that the documents did not answer. These are the most
+        actionable output for the document author.
+
+  cross_panel_synthesis:
+    - convergent_concerns: >
+        Claims or gaps that multiple personas identified independently.
+        High-signal: if two adversarial readers (p1, p5) and one
+        technical validator (p3) all surface the same concern, it is
+        structural.
+    - divergent_reactions: >
+        Claims that landed well with one persona and poorly with another.
+        Signals positioning trade-offs that the author should be aware of.
+    - unreliable_narrator_check: >
+        Was p5's pre-registered misconception (identity translation layer
+        as secret monolith) confirmed, refined, or refuted by the actual
+        reading? Record the outcome here.
+    - verdict_for_author: >
+        One paragraph addressed directly to the document author. The
+        synthesis agent's assessment of whether the documents are doing
+        their job for each of the four priority archetypes.

@@ -89,6 +89,9 @@ For later versions:
 ## Related Decisions
 
 - Related to: [ADR-002](./ADR-002-plugin-transport-json-rpc.md), [ADR-004](./ADR-004-finding-exchange-format.md)
+- [ADR-006](./ADR-006-clustering-algorithm.md) — produces `core:subsystem:{cluster_hash}` entities whose identity format this ADR defines; cluster-hash renames follow the same alias story.
+- [ADR-018](./ADR-018-identity-reconciliation.md) — translates Wardline qualnames / exception locations / SARIF logical locations into the `EntityId`s this ADR defines; the v0.1 rename-without-file-move limitation named here is the specific case ADR-018's heuristic fallback covers.
+- [ADR-022](./ADR-022-core-plugin-ontology.md) — constrains what `{kind}` in `{plugin_id}:{kind}:{canonical_qualified_name}` can be; reserves `file`, `subsystem`, `guidance` as core-owned kinds with `plugin_id: core`.
 
 ## References
 

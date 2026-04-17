@@ -10,6 +10,18 @@ This folder is the canonical home for authored Clarion architecture decision rec
 | [ADR-002](./ADR-002-plugin-transport-json-rpc.md) | Plugin transport: Content-Length framed JSON-RPC subprocess | Accepted |
 | [ADR-003](./ADR-003-entity-id-scheme.md) | Entity ID scheme: symbolic canonical names | Accepted |
 | [ADR-004](./ADR-004-finding-exchange-format.md) | Finding-exchange format: Filigree-native intake | Accepted |
+| [ADR-006](./ADR-006-clustering-algorithm.md) | Clustering algorithm — Leiden on imports+calls subgraph; Louvain fallback | Accepted |
+| [ADR-007](./ADR-007-summary-cache-key.md) | Summary cache key — 5-part composite with TTL backstop and churn-eager invalidation | Accepted |
+| [ADR-011](./ADR-011-writer-actor-concurrency.md) | Writer-actor concurrency with per-N-files transactions; `--shadow-db` opt-in | Accepted |
+| [ADR-012](./ADR-012-http-auth-default.md) | HTTP read-API authentication — UDS default with token fallback | Accepted |
+| [ADR-013](./ADR-013-pre-ingest-secret-scanner.md) | Pre-ingest secret scanner with LLM-dispatch block | Accepted |
+| [ADR-014](./ADR-014-filigree-registry-backend.md) | Filigree `registry_backend` flag and pluggable `RegistryProtocol` | Accepted |
+| [ADR-015](./ADR-015-wardline-filigree-emission.md) | Wardline→Filigree emission ownership — Clarion-side SARIF translator (v0.1), native Wardline emitter (v0.2) | Accepted |
+| [ADR-016](./ADR-016-observation-transport.md) | Observation transport — MCP-spawn (v0.1), Filigree HTTP endpoint (v0.2) | Accepted |
+| [ADR-017](./ADR-017-severity-and-dedup.md) | Severity mapping, rule-ID round-trip, and dedup policy | Accepted |
+| [ADR-018](./ADR-018-identity-reconciliation.md) | Identity reconciliation — Clarion translates; Wardline owns its qualnames; direct REGISTRY import with version pinning | Accepted |
+| [ADR-021](./ADR-021-plugin-authority-hybrid.md) | Plugin authority model: hybrid (declared capabilities + core-enforced minimums) | Accepted |
+| [ADR-022](./ADR-022-core-plugin-ontology.md) | Core/plugin ontology ownership boundary | Accepted |
 
 ## Backlog still tracked in the detailed design
 
@@ -18,18 +30,12 @@ The following decisions are still backlog items rather than authored ADR files. 
 | ADR | Title | Current state |
 |---|---|---|
 | ADR-005 | `.clarion/` git-committable by default; DB included, run logs excluded | Backlog |
-| ADR-006 | Clustering algorithm: Leiden with Louvain fallback | Backlog |
-| ADR-007 | Summary cache key design and invalidation | Backlog |
 | ADR-008 | Filigree file-registry displacement as breaking change | Superseded by ADR-014 |
 | ADR-009 | Structured briefings vs free-form prose | Backlog |
 | ADR-010 | MCP as first-class surface | Backlog |
-| ADR-011 | Writer-actor concurrency model | Backlog |
-| ADR-012 | Token auth in v0.1 | Backlog |
-| ADR-013 | Pre-ingest secret scanner with LLM-dispatch block | Backlog |
-| ADR-014 | Filigree `registry_backend` flag and pluggable `RegistryProtocol` | Backlog |
-| ADR-015 | Wardline-to-Filigree emission ownership | Backlog |
-| ADR-016 | Observation transport via Filigree HTTP endpoint | Backlog |
-| ADR-017 | Severity mapping, rule-ID round-trip, and dedup policy | Backlog |
-| ADR-018 | Identity reconciliation and Wardline REGISTRY pinning | Backlog |
 | ADR-019 | SARIF property-bag preservation | Backlog |
 | ADR-020 | Degraded-mode policy and explicit suite fallbacks | Backlog |
+
+## Pre-implementation scope commitments
+
+The priorities and scope implied by these ADRs are committed in [../v0.1/plans/v0.1-scope-commitments.md](../v0.1/plans/v0.1-scope-commitments.md). The ADR authoring sprint is staged against that memo.

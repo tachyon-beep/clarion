@@ -47,7 +47,13 @@ This is the rule that keeps integration additive. It has a concrete test and con
 
 ### The failure test
 
-**If removing a sibling product changes the *meaning* of another product's own data, Loom has centralised too far.** Sibling absence may reduce convenience or automation; it must not alter semantics. Less capability is acceptable; incoherent data is not.
+The principle has three failure modes. Any one of them means Loom has centralised too far:
+
+1. **Semantic coupling** — if removing a sibling product changes the *meaning* of another product's own data. Sibling absence may reduce convenience or automation; it must not alter semantics. Less capability is acceptable; incoherent data is not.
+2. **Initialization coupling** — if a product cannot start, self-test, or validate its own configuration without a sibling being present. The product may degrade its capabilities in the sibling's absence; it must not fail to boot.
+3. **Pipeline coupling** — if a pair of sibling products (X, Z) cannot exchange data except through a third sibling (Y). Each pair's ability to compose must be independent of any uninvolved third product — pairwise composability (§4) is not satisfied if the pair silently routes through an absent mediator.
+
+A "standalone mode" that works only because an invisible sibling is still imported, or a "pairwise mode" that actually routes through an absent mediator, is not federation.
 
 ### Concrete examples
 
@@ -55,6 +61,15 @@ This is the rule that keeps integration additive. It has a concrete test and con
 - **Wardline** enforces trust policy whether Filigree is ingesting findings or not. Findings reach Wardline's own SARIF output regardless of whether a downstream triage system exists.
 - **Clarion** builds its catalog whether Wardline is present or not. Wardline's annotations *enrich* Clarion's entity metadata with trust-tier and policy-semantic information, but Clarion's structural truth is independent of Wardline's policy truth.
 - **Shuttle**, if built, would execute changes whether any sibling is present. Sibling tools enrich its telemetry (which Filigree ticket? which Clarion entity? which Wardline policy?) but are never required for a change to apply or roll back.
+
+### v0.1 asterisks
+
+The v0.1 suite does not pass the expanded failure test cleanly. Two specific couplings are named here so they cannot drift unnoticed:
+
+- **Wardline→Filigree findings are pipeline-coupled through Clarion in v0.1.** Wardline's SARIF output reaches Filigree only via Clarion's `clarion sarif import` translator. This violates pipeline composability for the (Wardline, Filigree) pair. *Retirement condition*: Wardline gains a native Filigree emitter (see Clarion's ADR-015), at which point Clarion's SARIF translator retires and the pair composes directly. The asterisk ships with v0.1 and retires in v0.2.
+- **Clarion's Python plugin imports `wardline.core.registry.REGISTRY` at startup.** This is initialization coupling scoped to the Wardline-aware plugin specifically, not to Clarion as a product — Clarion's core and any non-Wardline-aware plugins do not depend on Wardline being importable. The coupling is named so it does not slip unexamined into a future general-purpose plugin. If a future plugin introduces similar initialization coupling without a clear "this plugin is specifically about Wardline" justification, it violates this rule.
+
+Asterisks are acceptable only with a written retirement condition and an honest statement of which failure-test mode is being temporarily violated. A "we'll fix it later" without a test-mode citation is not an asterisk; it is the stealth-monolith failure mode wearing different clothes.
 
 ### Why this matters
 

@@ -95,6 +95,8 @@ We will use subprocess-based JSON-RPC 2.0 with explicit Content-Length framing.
 ## Related Decisions
 
 - Related to: [ADR-001](./ADR-001-rust-for-core.md), [ADR-003](./ADR-003-entity-id-scheme.md)
+- [ADR-021](./ADR-021-plugin-authority-hybrid.md) — the subprocess supervision loop defined here is the enforcement surface for Content-Length ceiling, per-plugin RSS cap, and crash-loop counting of Layer 2 violations.
+- [ADR-022](./ADR-022-core-plugin-ontology.md) — the validation checkpoints at `initialize` (manifest acceptance) and at `file_analyzed` notifications (emission acceptance) enforce the ontology-shape rules this ADR's RPC surface carries.
 
 ## References
 

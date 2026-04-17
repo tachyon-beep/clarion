@@ -2,7 +2,7 @@
 
 **Status**: Layer 3 of the Clarion v0.1 docset — implementation-level reference. Canonical home of the ADR backlog, SQL schema, Rust struct definitions, full YAML config example, exact rule-ID catalogues, wire-format mapping tables, and cross-tool prerequisite lists.
 **Date**: 2026-04-17
-**Primary author**: qacona@gmail.com (with Claude)
+**Primary author**: john@foundryside.dev (with Claude)
 **First customer target**: `/home/john/elspeth` (~425k LOC Python)
 **Revision**: 5 (post docs-restructure 2026-04-17; see Appendix D for revision history)
 
@@ -1283,24 +1283,35 @@ Response:
 
 **404 behaviour**: returns `resolution_confidence: "none"` with an empty `entity_id` rather than HTTP 404. Lets callers distinguish "Clarion doesn't know this" from "Clarion is down."
 
-### Token auth — full spec
+### Authentication — full spec (ADR-012)
 
-- Enable via `clarion.yaml:serve.auth: token` (default: `none`).
-- Token format: 32 random bytes, URL-safe base64-encoded (43 characters), prefixed with `clrn_` for grep-ability in logs and leak-detection.
-- Token generation: `clarion serve auth init` creates the token and stores it.
-- Storage, in preference order:
-  1. OS keychain (macOS Keychain, Linux Secret Service / libsecret, Windows Credential Manager) via `keyring` crate.
-  2. `~/.config/clarion/token` with file-mode `0600`. On Unix hosts without a keychain agent running; emits a `CLA-INFRA-TOKEN-STORAGE-DEGRADED` finding on first use so operators know they're on the fallback path.
-- Wire format: HTTP header `Authorization: Bearer clrn_<43chars>`. Constant-time comparison on the server side to avoid timing oracles.
-- Token rotation: `clarion serve auth rotate` generates a new token, grace-period accepts both old and new for 24 hours, then drops the old. Rotation is idempotent: retrying after a partial failure completes cleanly.
+**Default on Linux / macOS — Unix domain socket** (`serve.auth: uds`):
+
+- `clarion serve` binds `<project_root>/.clarion/socket` with mode `0600`, owner = the UID running `clarion serve`.
+- Transport: HTTP/1.1 over UDS. Server: `axum` + `tokio::net::UnixListener`. Clients: `hyper-unix-connector` or equivalent.
+- Auth is filesystem-permissions based; HTTP layer does not require `Authorization` header under UDS mode.
+- Stale-socket cleanup: on startup, Clarion stat-checks `.clarion/socket` — if present and no process is listening, it unlinks before binding. Double-start (`clarion serve` twice) fails loudly with `CLA-INFRA-SOCKET-IN-USE`.
+- Sibling discovery: `.clarion/config.json` records `serve.socket_path`; sibling tools read the path and connect via `unix://<absolute path>`.
+
+**Fallback (auto on Windows, opt-in elsewhere) — TCP + Bearer token** (`serve.auth: token`):
+
+- Windows default: `token` mode on `127.0.0.1:8765` (configurable via `serve.bind_port`).
+- Auto-mint: first `clarion serve` writes `.clarion/auth.token` (mode `0600`). Token format: 32 URL-safe base64 bytes (43 chars) prefixed `clrn_` for grep-ability in logs.
+- OS-keychain promotion: `clarion serve auth promote-to-keychain` migrates the token from file to macOS Keychain / Linux libsecret / Windows Credential Manager via the `keyring` crate. Emits `CLA-INFRA-TOKEN-STORAGE-DEGRADED` if the keychain is unavailable (falls back to file).
+- Wire format: HTTP header `Authorization: Bearer clrn_<43chars>`. Constant-time comparison.
+- Rotation: `clarion serve auth rotate` generates a new token, accepts both old and new for 24 hours, drops the old. Rotation is idempotent.
 - Scoping: v0.1 has one token per install with full read access. Per-endpoint scoping and revocation lists are v0.2+.
 
-**How Wardline picks up the token in CI**:
+**Explicit-none** (`serve.auth: none` or `--i-accept-no-auth`):
 
-- `CLARION_TOKEN` env var (preferred for CI; injected via the CI provider's secret store).
-- `~/.config/clarion/token` (inherited via bind-mount into the CI container).
-- Wardline's `wardline.yaml` records the Clarion endpoint URL (not the token — the token comes from env). Endpoint auth-required by default; plain-HTTP + no-token is refused in CI context.
-- A `clarion check-auth --from wardline` CLI verb returns exit code 0 if Wardline can successfully authenticate; used as a CI pre-flight.
+- Allowed but loud: emits `CLA-INFRA-HTTP-AUTH-DISABLED` (severity ERROR) on every `clarion serve` startup and reaches Filigree through the normal finding pipeline. Persistent banner in logs.
+- Use cases: air-gapped CI where external ingress is controlled separately; local debugging with explicit operator decision. CLI flag is deliberately verbose (`--i-accept-no-auth`) to prevent accidental muscle-memory enabling.
+
+**How sibling tools pick up auth in CI**:
+
+- **UDS mode**: sibling tools mount the project's `.clarion/socket` into their process (bind-mount for containers, bare path for same-host processes). No token plumbing.
+- **Token mode**: `CLARION_TOKEN` env var (preferred for CI; injected via the CI provider's secret store) or `.clarion/auth.token` bind-mount. Wardline's `wardline.yaml` records the Clarion endpoint URL (`unix://…` or `http://127.0.0.1:8765`) but not the token — token comes from env.
+- **Pre-flight check**: `clarion check-auth --from wardline` returns exit 0 if the endpoint is reachable and authenticated under the active mode. Returns 0 with warning under `none` mode.
 
 ---
 
@@ -1336,7 +1347,7 @@ Clarion v0.1 is not joining an existing Loom fabric — it is the work that weav
 
 1. **`registry_backend` config flag + pluggable `RegistryProtocol`** (ADR-014). Default: `filigree` (current behaviour). Alternative: `clarion`. When set to `clarion`, all four `file_records(id)` foreign-key writes route through a `RegistryProtocol` that consults Clarion's HTTP read API for `file_id` resolution before falling back to local auto-create. Three auto-create paths (`POST /api/v1/scan-results`, `create_observation(file_path=…)`, `trigger_scan`) are the primary refactor surface. Surgery estimate from recon: ~5–8 files in Filigree + SQLite FK rework + test updates. **Clarion workaround if absent**: Clarion still emits findings via scan-results; Filigree auto-creates shadow `file_records` under Filigree-native rules; Clarion's "owns the file registry" claim is downgraded to "owns the entity catalog; Filigree shadows the file mapping."
 
-2. **Observation-creation HTTP endpoint** (ADR-016). Filigree's observation API is MCP-only today (`mcp_tools/observations.py`). Clarion needs to emit observations from `clarion analyze` and `clarion serve`; the natural transport is HTTP (Clarion is a Rust binary, an MCP client for Filigree adds dependency weight). Add `POST /api/v1/observations` with a schema parallel to the MCP tool. **Clarion workaround if absent**: Clarion ships an MCP client for Filigree (stdio subprocess of `filigree mcp` or TCP) and uses it for observation emission — adds plugin-protocol complexity on Clarion's side.
+2. **[Deferred to v0.2 per ADR-016]** Observation-creation HTTP endpoint. v0.1 transport is Clarion spawning `filigree mcp` as a subprocess and using the existing `create_observation` MCP tool over stdio. v0.2 adds `POST /api/v1/observations` with a schema parallel to the MCP tool; Clarion's emit path switches to HTTP and the subprocess path retires.
 
 3. **`scan_source` coordination** (ADR-017 supplementary). Filigree's `scan_source` is free-form today; no registry. Adding a `valid_scan_sources` section to `GET /api/files/_schema` (or a `GET /api/v1/scan-sources` endpoint) lets Clarion detect name collisions and Wardline register itself. **Clarion workaround if absent**: hardcoded reserved names (`clarion`, `wardline`, `cov`, `sec`) documented in §7; collisions surface as duplicate finding IDs post-ingest.
 
@@ -1346,6 +1357,7 @@ Clarion v0.1 is not joining an existing Loom fabric — it is the work that weav
 
 **Nice-to-have (v0.2+)**:
 
+- **`POST /api/v1/observations` HTTP endpoint** (ADR-016 retirement trigger) — when Filigree ships this, Clarion's `filigree mcp` subprocess-spawn path retires; Clarion emit switches to HTTP.
 - **Server-side per-entity dedup** for scan-results (supersedes Clarion's `mark_unseen` workaround in §7). Adds an optional `entity_id` extension field to Filigree's dedup key.
 - **Native SARIF ingest endpoint** (`POST /api/v1/sarif-results`) — makes Clarion's SARIF→Filigree translator unnecessary. Non-trivial work in Filigree (SARIF is large).
 - **`filigree --clarion-compat` self-check** that verifies a running Filigree deployment satisfies the `registry_backend: clarion` preconditions.
@@ -1424,9 +1436,10 @@ Clarion v0.1 is not joining an existing Loom fabric — it is the work that weav
 
 ### Error surfaces
 
-Every failure produces either a finding or a run-stats entry. `CLA-INFRA-*` rule namespace:
+Every failure produces either a finding or a run-stats entry. Rule-ID namespacing per ADR-017 — `CLA-INFRA-*` for core-emitted pipeline/infrastructure failures; `CLA-PY-*` for Python-plugin-emitted rule findings (including parse errors, which the plugin emits when it fails to parse a file):
 
-- `CLA-INFRA-PARSE-ERROR`, `CLA-INFRA-PLUGIN-TIMEOUT`, `CLA-INFRA-PLUGIN-CRASH`
+- `CLA-PY-PARSE-ERROR` (Python-plugin emitted when a source file fails to parse)
+- `CLA-INFRA-PLUGIN-TIMEOUT`, `CLA-INFRA-PLUGIN-CRASH`
 - `CLA-INFRA-LLM-ERROR`, `CLA-INFRA-LLM-RATE-LIMIT-EXCEEDED`
 - `CLA-INFRA-BUDGET-WARNING`, `CLA-INFRA-BUDGET-EXCEEDED`
 - `CLA-INFRA-ANALYSIS-ABORTED`, `CLA-INFRA-BRIEFING-INVALID`
@@ -1482,48 +1495,48 @@ Every failure produces either a finding or a run-stats entry. `CLA-INFRA-*` rule
 
 ## 11. Architecture Decisions
 
-Decisions in this design are load-bearing enough that they deserve explicit Architecture Decision Records (ADRs) rather than prose burial. Authored ADRs live in [../adr/README.md](../adr/README.md); backlog items that have not yet been written as standalone files remain tracked here. The ADR format is short: **context, decision, alternatives considered, consequences, status**.
+Decisions in this design are load-bearing enough that they deserve explicit Architecture Decision Records (ADRs) rather than prose burial. The ADR format is short: **context, decision, alternatives considered, consequences, status**.
 
-### ADR backlog
+**Canonical source**: [system-design.md §12](./system-design.md#12-architecture-decisions) carries the authoritative ADR list with status, priority, and rationale summaries. Authored ADR files live in [../adr/README.md](../adr/README.md).
 
-| # | Decision | Status | Priority | Where captured in this design |
-|---|----------|--------|----------|-------------------------------|
-| ADR-001 | **Rust for the core** | **Decided by directive — no alternatives analysis required** | P0 | System-design §1, Appendix C |
-| ADR-002 | Plugin transport: Content-Length framed JSON-RPC 2.0 subprocess | To author | P0 | §1, System-design §2 |
-| ADR-003 | Entity ID scheme: symbolic canonical-name; file path as property; EntityAlias v0.2 | To author | P0 | §2 |
-| ADR-004 | Finding-exchange format: Filigree-native intake (not SARIF); `metadata.clarion.*` nesting | To author | P0 | §2, §7 |
-| ADR-005 | `.clarion/` git-committable by default, DB included, run logs excluded | To author | P1 | §3 |
-| ADR-006 | Clustering algorithm: Leiden (with Louvain fallback) on imports + calls subgraph | To author | P1 | §4, §5 |
-| ADR-007 | Summary cache key design and invalidation (content + template + tier + guidance fingerprint + TTL backstop) | To author | P1 | §4 |
-| ADR-008 | Filigree file-registry displacement as breaking change — superseded by ADR-014 | Superseded | — | §7, §9 |
-| ADR-009 | Structured briefings vs free-form prose | To author | P2 | §2, System-design Principle 2 |
-| ADR-010 | MCP as first-class surface — lock-in cost vs ecosystem reach | To author | P2 | System-design §8 |
-| ADR-011 | Writer-actor concurrency model (vs shadow-DB-swap) | To author | P1 | §3 |
-| ADR-012 | Token auth in v0.1 (opt-in default; OS keychain preferred) | To author | P1 | §7 |
-| ADR-013 | Pre-ingest secret scanner (detect-secrets) with LLM-dispatch block | To author | P1 | §8, System-design §10 |
-| ADR-014 | Filigree `registry_backend` flag + pluggable `RegistryProtocol` — schema surgery, not config flip | To author | P0 | §7, §9 |
-| ADR-015 | Wardline→Filigree emission ownership: Clarion-side SARIF translator (v0.1), native Wardline POST (v0.2) | To author | P0 | §7, §9 |
-| ADR-016 | Observation transport: Filigree adds `POST /api/v1/observations` HTTP endpoint; Clarion workaround is MCP client | To author | P0 | §9 |
-| ADR-017 | Severity mapping (Clarion internal `{INFO,WARN,ERROR,CRITICAL,NONE}` ↔ Filigree wire `{critical,high,medium,low,info}`); rule-ID round-trip policy; dedup via `mark_unseen=true` | To author | P0 | §7 |
-| ADR-018 | Identity reconciliation: Clarion maintains translation layer; Wardline owns its qualnames; direct `REGISTRY` import with `REGISTRY_VERSION` pinning | To author | P0 | §2, §9 |
-| ADR-019 | SARIF property-bag preservation: Wardline's 44 `wardline.*` extension keys round-trip through `metadata.wardline_properties.*` | To author | P1 | §7 |
-| ADR-020 | Degraded-mode policy: Clarion ships on its own timeline; `--no-filigree` / `--no-wardline` flags for prerequisite-slippage scenarios | To author | P1 | System-design §11 |
+The table below is a navigation aid for implementers: it maps each ADR to the section(s) of *this detailed design* where the decision shows up concretely. It deliberately does not duplicate the rationale or status columns from system-design.md — consult the canonical table for those.
+
+### Where each ADR is captured in this detailed design
+
+| # | Decision | Where captured |
+|---|----------|----------------|
+| ADR-001 | Rust for the core | §1, Appendix C |
+| ADR-002 | Plugin transport: Content-Length framed JSON-RPC 2.0 subprocess | §1 |
+| ADR-003 | Entity ID scheme: symbolic canonical-name; file path as property; EntityAlias v0.2 | §2 |
+| ADR-004 | Finding-exchange format: Filigree-native intake; `metadata.clarion.*` nesting | §2, §7 |
+| ADR-005 | `.clarion/` git-committable by default | §3 |
+| [ADR-006](../adr/ADR-006-clustering-algorithm.md) | Clustering algorithm: Leiden with Louvain fallback | §4, §5 |
+| [ADR-007](../adr/ADR-007-summary-cache-key.md) | Summary cache key design and invalidation | §4 |
+| ADR-008 | Superseded by ADR-014 | §7, §9 |
+| ADR-009 | Structured briefings vs free-form prose | §2 |
+| ADR-010 | MCP as first-class surface | — (system-design §8) |
+| [ADR-011](../adr/ADR-011-writer-actor-concurrency.md) | Writer-actor concurrency model | §3 |
+| [ADR-012](../adr/ADR-012-http-auth-default.md) | HTTP auth — UDS default with TCP+token fallback | §7 |
+| [ADR-013](../adr/ADR-013-pre-ingest-secret-scanner.md) | Pre-ingest secret scanner | §8 |
+| ADR-014 | Filigree `registry_backend` flag + pluggable `RegistryProtocol` | §7, §9 |
+| [ADR-015](../adr/ADR-015-wardline-filigree-emission.md) | Wardline→Filigree emission: Clarion SARIF translator (v0.1), native Wardline POST (v0.2) | §7, §9 |
+| [ADR-016](../adr/ADR-016-observation-transport.md) | Observation transport: `filigree mcp` subprocess (v0.1); `POST /api/v1/observations` HTTP (v0.2 retirement) | §9 |
+| [ADR-017](../adr/ADR-017-severity-and-dedup.md) | Severity mapping + rule-ID round-trip + dedup via `mark_unseen=true` | §7 |
+| [ADR-018](../adr/ADR-018-identity-reconciliation.md) | Identity reconciliation: Clarion translates; direct `REGISTRY` import with version pinning | §2, §9 |
+| ADR-019 | SARIF property-bag preservation: `metadata.wardline_properties.*` pass-through | §7 |
+| ADR-020 | Degraded-mode policy: `--no-filigree` / `--no-wardline` flags | — (system-design §11) |
+| [ADR-021](../adr/ADR-021-plugin-authority-hybrid.md) | Plugin authority model: hybrid — declared capabilities + core-enforced minimums | §1 (hybrid controls to be added) |
+| [ADR-022](../adr/ADR-022-core-plugin-ontology.md) | Core/plugin ontology ownership boundary | §1 (core/plugin split) |
 
 ### ADR-001 note (Rust core)
 
-The Rust decision is a directive from the primary author (qacona@gmail.com) and is not subject to alternatives analysis in this revision. Recorded here for traceability:
+Recorded here for implementer traceability. The amended ADR-001 text lives at [../adr/ADR-001-rust-for-core.md](../adr/ADR-001-rust-for-core.md).
 
 - **Context**: single-binary distribution, LLM orchestration, SQLite + HTTP API workload, multi-plugin subprocess supervision.
 - **Decision**: Rust.
-- **Alternatives considered**: (not surveyed — author directive).
-- **Consequences**: single-binary ship is straightforward; ecosystem (axum, rusqlite, tokio) is mature; Python-plugin interop is out-of-process subprocess and therefore unaffected by language choice; recruiting and contribution effort higher than for Go or TypeScript. The implementation plan accepts these consequences.
-- **Status**: Accepted (directive). Revisitable only on the author's instruction.
-
-### Writing cadence
-
-- ADR-002 through ADR-004 must exist as markdown files before the implementation plan is authored. The decisions are fixed; the ADRs record them with explicit alternatives and consequences for future reviewers.
-- ADR-005 through ADR-013 are to be written alongside early implementation. They capture decisions that have already been made in this document, but deserve their own files for discoverability.
-- Any decision reversal during implementation (e.g., "the writer-actor model doesn't work, switching to shadow-DB") requires a new dated ADR revision — not an edit to the original.
+- **Alternatives considered**: Go (mature ecosystem, simpler concurrency model, single-binary story, but SQLite ergonomics weaker and subprocess supervision more hand-rolled); TypeScript / Node (fast iteration but single-binary distribution and SQLite concurrency are poor matches).
+- **Consequences**: single-binary ship is straightforward; ecosystem (axum, rusqlite, tokio) is mature; Python-plugin interop is out-of-process subprocess and therefore unaffected by language choice; contributor pool narrower than Go or TypeScript.
+- **Status**: Accepted.
 
 ---
 

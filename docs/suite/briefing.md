@@ -107,7 +107,7 @@ The suite is composed via two narrow protocols and a shared identity scheme.
 | Declared topology | Wardline manifest / fingerprint files | Clarion catalog | File read at `clarion analyze` |
 | Annotation vocabulary | `wardline.core.registry.REGISTRY` | Clarion's Python plugin | Direct import at plugin startup |
 | Findings | Clarion | Filigree | `POST /api/v1/scan-results` (Clarion-native schema) |
-| Findings (Wardline-sourced) | Wardline SARIF → Clarion translator | Filigree | `POST /api/v1/scan-results` via `clarion sarif import` |
+| Findings (Wardline-sourced) *(v0.2)* | Wardline SARIF → Clarion translator | Filigree | `POST /api/v1/scan-results` via `clarion sarif import`; deferred in v0.1 per Clarion ADR-015 — retires when Wardline emits natively to Filigree |
 | Observations | Clarion consult mode | Filigree | MCP tool call (or HTTP once the endpoint ships) |
 | Entity state | Clarion | Wardline (v0.2+) | Clarion HTTP read API; Wardline currently re-scans |
 | Issue cross-references | Filigree | Clarion consult surface | Filigree read API |
@@ -142,16 +142,32 @@ Four commitments keep the Loom products from drifting into overlap (see [loom.md
 
 ### What Clarion v0.1 ships
 
-A single-binary Rust core plus a Python language plugin. The core handles storage, LLM orchestration, clustering, and MCP serving; the plugin handles Python parsing, import resolution, and entity extraction. v0.1's scope is **bootstrapping the suite fabric**, not joining it: Clarion v0.1 delivers the cross-tool protocols that Filigree and Wardline don't yet speak.
+A single-binary Rust core plus a Python language plugin. The core handles storage, LLM orchestration, clustering, and MCP read-only consult; the plugin handles Python parsing, import resolution, and entity extraction.
+
+v0.1 is scoped as **minimal-core plus the Filigree registry handover**:
+
+- Entity catalog + code graph + guidance sheets, SQLite-backed.
+- Python-plugin parsing and entity extraction.
+- Local `findings.jsonl` writer.
+- MCP read-only consult surface.
+- Filigree `registry_backend: clarion` integration so Clarion owns the file registry end-to-end. Filigree-side work lands alongside Clarion's own release.
+
+Deferred to v0.2 with written retirement conditions:
+
+- **Wardline→Filigree SARIF bridge.** Wardline findings flow to Filigree only when Wardline ships its own native Filigree emitter (Clarion ADR-015). Until then, the (Wardline, Filigree) pair composes outside Clarion, via Wardline's existing SARIF-to-GitHub-Security path. `loom.md` §5 names this as a v0.1 asterisk.
+- **Observation HTTP transport.** Clarion emits observations via MCP tool calls in v0.1; a dedicated Filigree HTTP endpoint lands in v0.2.
+- **Clarion HTTP write API and summary cache beyond in-memory.** Read-only consult in v0.1; write surface deferred.
 
 ### What the suite needs from Filigree and Wardline for Clarion to ship
 
-Because Clarion is the work that weaves the fabric, several changes land in the sibling tools as prerequisites:
+Several changes land in the sibling tools as Clarion-v0.1 prerequisites. All three products are maintained together, so these are within-scope work items rather than external dependencies:
 
-- **Filigree**: a pluggable `registry_backend` so Clarion can own the file registry; an HTTP endpoint for observation creation; a published schema-compatibility contract.
-- **Wardline**: a stable `REGISTRY_VERSION` that Clarion's plugin pins against; a commitment to maintain legacy-decorator aliases; eventually, a native emitter to Filigree so Clarion's SARIF translator can retire.
+- **Filigree (v0.1)**: a pluggable `registry_backend` (authored jointly with Clarion ADR-014) so Clarion can own the file registry; a published schema-compatibility contract (`NFR-COMPAT-01`).
+- **Filigree (v0.2)**: an HTTP endpoint for observation creation.
+- **Wardline (v0.1)**: a stable `REGISTRY_VERSION` that Clarion's plugin pins against; a commitment to maintain legacy-decorator aliases.
+- **Wardline (v0.2)**: a native emitter to Filigree so Clarion's SARIF translator can be retired per ADR-015.
 
-Clarion's v0.1 design set spells these asks out in [system-design.md](../clarion/v0.1/system-design.md) and [detailed-design.md](../clarion/v0.1/detailed-design.md). Clarion ships with degraded-mode fallbacks (`--no-filigree`, `--no-wardline`) so it doesn't block on the slowest of three release trains.
+Clarion's v0.1 design set spells these asks out in [system-design.md](../clarion/v0.1/system-design.md) and [detailed-design.md](../clarion/v0.1/detailed-design.md). Clarion ships with degraded-mode fallbacks (`--no-filigree`, `--no-wardline`) so operators using only part of the suite still get a coherent product.
 
 ---
 
@@ -166,5 +182,5 @@ Clarion's v0.1 design set spells these asks out in [system-design.md](../clarion
 | Read Clarion's detailed design reference | [../clarion/v0.1/detailed-design.md](../clarion/v0.1/detailed-design.md) |
 | See what the design reviewer flagged | [../clarion/v0.1/reviews/design-review.md](../clarion/v0.1/reviews/design-review.md) |
 | See the integration reality check | [../clarion/v0.1/reviews/integration-recon.md](../clarion/v0.1/reviews/integration-recon.md) |
-| Work with Filigree today | `/home/john/filigree` — `CLAUDE.md` and `filigree --help` |
-| Work with Wardline today | `/home/john/wardline` — `docs/spec/` |
+| Work with Filigree today | Check out the Filigree repository; start with its `CLAUDE.md` and `filigree --help`. |
+| Work with Wardline today | Check out the Wardline repository; start with `docs/spec/`. |

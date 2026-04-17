@@ -1,11 +1,10 @@
 # Clarion v0.1 Design Review
 
-**Reviewed document**: `2026-04-17-clarion-v0.1-design.md`
+**Original reviewed document (pre-restructure)**: `2026-04-17-clarion-v0.1-design.md`
+**Historical note**: this review evaluates the pre-restructure single-file design. The current canonical docset lives in [../README.md](../README.md), with the resulting implementation-level reference in [../detailed-design.md](../detailed-design.md). This file is retained as supporting context, not as normative guidance.
 **Review date**: 2026-04-17
 **Review method**: Eight parallel specialist reviews across solution architecture, systems dynamics, Python engineering, Rust engineering, security, integration architecture, reality check (symbol/path/API verification), and architecture-decision rigor.
 **Verdict**: **Revise before authoring the implementation plan.** Two factual errors must be corrected; four structural decisions need explicit ADRs; the v0.1 scope has three known defects that will damage the suite's cross-tool identity story if not resolved before first ship.
-
-**Historical note**: this review evaluates the pre-restructure single-file design. The current canonical docset lives in [../README.md](../README.md), with the resulting implementation-level reference in [../detailed-design.md](../detailed-design.md).
 
 ---
 

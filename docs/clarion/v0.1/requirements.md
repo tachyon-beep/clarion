@@ -22,7 +22,7 @@ This is the requirements specification for Clarion v0.1 — the *what*: capabili
 
 - Each requirement has a stable ID (`REQ-*`, `NFR-*`, `CON-*`, `NG-*`), a plain-English statement, a rationale, a verification method, and a **See** line pointing to the system-design section that addresses it.
 - Requirement IDs are load-bearing: filigree issues cite them by ID in descriptions and commit messages; code review references them when discussing implementation. IDs are stable across rev bumps unless a requirement is fully retired (in which case the ID is never reused).
-- "Clarion" throughout means Clarion v0.1 specifically. Where v0.2+ behaviour is deliberately different, it's named as a non-goal (`NG-*`) here and as a deferred item in the detailed-design's §12.
+- "Clarion" throughout means Clarion v0.1 specifically. Where v0.2+ behaviour is deliberately different, it's named as a non-goal (`NG-*`) in the Non-Goals section of this document.
 
 ### Relationship to Loom
 
@@ -216,7 +216,7 @@ When rendering a briefing, Clarion queries Filigree for findings on this entity 
 
 #### REQ-BRIEFING-06 — Detail levels: short / medium / full / exhaustive
 
-Briefings are renderable at four detail levels with target token sizes: `short` ≤100 tokens, `medium` ≤400, `full` ≤1,500, `exhaustive` ≤3,600.
+Briefings are renderable at four detail levels with token ceilings: `short` ≤100 tokens, `medium` ≤400, `full` ≤1,500, `exhaustive` ≤3,600. The ≤ figures are enforced hard limits that trigger truncation; typical briefings target roughly half these values (see System Design §3). Implementations must treat the ≤ figures as the contract.
 
 **Rationale**: Bounded responses (Principle 2) demand fixed token budgets per detail level. LLM agents can request what they need without pulling an entire subsystem's worth of text into their context.
 **Verification**: For each level, a representative fixture briefing measures under the target; exceeding triggers truncation rather than silent overflow.
@@ -724,7 +724,7 @@ Clarion structures prompts with explicit `<file_content trusted="false">...</fil
 
 #### NFR-SEC-03 — Token auth storage on opt-in HTTP API
 
-When HTTP API auth is enabled, tokens are stored in OS keychain preferred / `~/.config/clarion/token` with file-mode 0600 fallback. Fallback mode emits `CLA-INFRA-TOKEN-STORAGE-DEGRADED`.
+When HTTP API auth is enabled, Clarion stores tokens in the OS keychain when available and falls back to `~/.config/clarion/token` with file-mode 0600 otherwise. The fallback path emits `CLA-INFRA-TOKEN-STORAGE-DEGRADED`.
 
 **Rationale**: File-mode 0600 is the Unix world-line for single-user secrets; OS keychain is better when available. Making the degradation explicit (rather than silent) tells operators when they're on the weaker path.
 **Verification**: Keychain-available host uses keychain; keychain-absent host falls back with finding.
@@ -969,7 +969,7 @@ Clarion v0.1 uses SQLite as its persistence layer. Kuzu, DuckDB, and custom grap
 
 ## Non-Goals (`NG-*`)
 
-What Clarion v0.1 explicitly does NOT do. Consolidates the detailed-design's §12 Explicit Deferrals and §1 "What Clarion is NOT."
+These are Clarion v0.1's authoritative non-goals — what the product explicitly does NOT do. Items originating as deferrals from the pre-restructure design have been normalised into this list.
 
 ### NG-01 — Not a linter or pattern-rule scanner
 
