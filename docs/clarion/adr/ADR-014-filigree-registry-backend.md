@@ -21,7 +21,7 @@ Each auto-create path produces a Filigree-native `file_records.id` (UUID-derived
 
 Clarion v0.1 claims to own structural truth about the codebase (`loom.md` §2). That claim is inconsistent with Filigree silently minting file identities on every POST. A protocol boundary is needed.
 
-`registry_backend` and `FILIGREE_FILE_REGISTRY_DISPLACED` do not exist in Filigree today — verified by `grep` across `/home/john/filigree` on 2026-04-17 (see `reviews/integration-recon.md` §2.1). Both are net-new additions.
+`registry_backend` and `FILIGREE_FILE_REGISTRY_DISPLACED` do not exist in Filigree today — verified by `grep` across `/home/john/filigree` on 2026-04-17 (see `reviews/pre-restructure/integration-recon.md` §2.1). Both are net-new additions.
 
 ## Decision
 
@@ -109,12 +109,12 @@ Accept that Filigree mints its own file IDs forever; Clarion reconciles post-hoc
 - [ADR-016](./ADR-016-observation-transport.md) — the `create_observation(file_path=…)` auto-create path is one of the three delegated operations; under `registry_backend: clarion` mode the `file_id` resolution in that path uses this ADR's protocol regardless of whether ADR-016's transport is MCP-spawn (v0.1) or HTTP (v0.2).
 - [ADR-017](./ADR-017-severity-and-dedup.md) — `mark_unseen=true` dedup relies on stable file IDs, which `clarion` mode provides and shadow mode does not.
 - [ADR-018](./ADR-018-identity-reconciliation.md) — the qualname ↔ EntityId translation layer is adjacent; `clarion` mode's `file_id` resolution is one slice of the broader identity-reconciliation surface.
-- [ADR-020](./ADR-020-degraded-mode-policy.md) (pending) — shadow-registry mode is one of the enumerated degraded modes.
+- ADR-020 (pending; see the [ADR index backlog](./README.md)) — shadow-registry mode is one of the enumerated degraded modes.
 - [ADR-022](./ADR-022-core-plugin-ontology.md) — file-kind entities are the narrowest ontology surface the plugin-vs-core boundary governs; ADR-022 states the `file` kind's core ownership as a first-class decision, and this ADR is the downstream consumer that depends on it.
 
 ## References
 
 - [Clarion v0.1 system design §9](../v0.1/system-design.md) — integration posture; capability probe; degraded modes.
-- [Integration reconnaissance §2.1](../v0.1/reviews/integration-recon.md) — `file_records` schema; four NOT-NULL foreign keys; three auto-create paths; verified absence of `registry_backend` and error code.
+- [Integration reconnaissance §2.1](../v0.1/reviews/pre-restructure/integration-recon.md) — `file_records` schema; four NOT-NULL foreign keys; three auto-create paths; verified absence of `registry_backend` and error code.
 - [Loom doctrine §4, §5, §6](../../suite/loom.md) — pairwise composability; enrichment failure test; no-shared-store rule.
 - [Clarion v0.1 scope commitments](../v0.1/plans/v0.1-scope-commitments.md) — Q2 commits `registry_backend` to v0.1 as within-scope Filigree work.

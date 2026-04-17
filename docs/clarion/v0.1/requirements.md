@@ -1,14 +1,14 @@
 # Clarion v0.1 — Requirements
 
-**Status**: Draft — aligned with the layered docset baseline and detailed-design revision 5
-**Date**: 2026-04-17
+**Status**: Baselined for v0.1 implementation (post-ADR sprint 2026-04-18)
+**Baseline**: 2026-04-17 · **Last updated**: 2026-04-18
 **Primary author**: qacona@gmail.com (with Claude)
 **First customer target**: `/home/john/elspeth` (~425k LOC Python)
 **Companion documents**:
 - [system-design.md](./system-design.md) — system design (the *how*, mid-level)
 - [detailed-design.md](./detailed-design.md) — detailed design reference (implementation-level)
-- [reviews/design-review.md](./reviews/design-review.md) — prior review that shaped revs 2-4
-- [reviews/integration-recon.md](./reviews/integration-recon.md) — reality check against Filigree / Wardline
+- [reviews/pre-restructure/design-review.md](./reviews/pre-restructure/design-review.md) — prior review that shaped revs 2-4
+- [reviews/pre-restructure/integration-recon.md](./reviews/pre-restructure/integration-recon.md) — reality check against Filigree / Wardline
 
 ---
 
@@ -40,7 +40,25 @@ The five design principles from the detailed-design frame the specific requireme
 
 ### Glossary
 
-See [detailed-design.md](./detailed-design.md) Appendix B. Terms used here without explanation are defined there.
+The terms below are the ones this requirements layer uses most often:
+
+| Term | Definition |
+|---|---|
+| **Briefing** | Structured summary answering a fixed set of questions about an entity. |
+| **Entity** | Typed node in Clarion's property graph. |
+| **Entity ID** | Stable identifier of the form `{plugin_id}:{kind}:{canonical_qualified_name}`. |
+| **Edge** | Typed relationship between entities such as `contains`, `calls`, or `imports`. |
+| **Finding** | Structured claim-with-evidence; may be a defect, fact, classification, metric, or suggestion. |
+| **Guidance fingerprint** | Hash of the guidance sheets applied to a query; part of the summary-cache key. |
+| **Plugin manifest** | YAML declaration of a plugin's kinds, edges, rules, and capabilities. |
+| **Scope lens** | Query/session filter that biases neighbour lookups toward a relationship family. |
+| **Tier** | Wardline trust classification preserved verbatim by Clarion. |
+| **Writer-actor** | Single task that owns SQLite writes; other tasks submit mutations through it. |
+| **Pre-ingest redaction** | Secret scan that runs before any file content is sent to the LLM provider. |
+| **Capability probe / compat report** | Startup check of sibling-tool availability that emits one compatibility finding. |
+| **`scan_run_id`** | Filigree-owned identifier for a finding-emission run. |
+
+See [detailed-design.md](./detailed-design.md) Appendix B for the full glossary.
 
 ---
 

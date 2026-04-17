@@ -180,7 +180,7 @@ Clarion's v0.1 design set spells these asks out in [system-design.md](../clarion
 | Read Clarion's requirements | [../clarion/v0.1/requirements.md](../clarion/v0.1/requirements.md) |
 | Read Clarion's system design | [../clarion/v0.1/system-design.md](../clarion/v0.1/system-design.md) |
 | Read Clarion's detailed design reference | [../clarion/v0.1/detailed-design.md](../clarion/v0.1/detailed-design.md) |
-| See what the design reviewer flagged | [../clarion/v0.1/reviews/design-review.md](../clarion/v0.1/reviews/design-review.md) |
-| See the integration reality check | [../clarion/v0.1/reviews/integration-recon.md](../clarion/v0.1/reviews/integration-recon.md) |
+| See what the design reviewer flagged | [../clarion/v0.1/reviews/pre-restructure/design-review.md](../clarion/v0.1/reviews/pre-restructure/design-review.md) |
+| See the integration reality check | [../clarion/v0.1/reviews/pre-restructure/integration-recon.md](../clarion/v0.1/reviews/pre-restructure/integration-recon.md) |
 | Work with Filigree today | Check out the Filigree repository; start with its `CLAUDE.md` and `filigree --help`. |
 | Work with Wardline today | Check out the Wardline repository; start with `docs/spec/`. |

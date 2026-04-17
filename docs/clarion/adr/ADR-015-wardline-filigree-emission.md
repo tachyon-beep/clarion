@@ -13,7 +13,7 @@ This arrangement is named as an explicit **pipeline-coupling asterisk** in `loom
 
 ## Context
 
-Wardline today has no HTTP client (`reviews/integration-recon.md:339`). `wardline/pyproject.toml:22` declares `dependencies = []` and the CI pipeline uploads SARIF to GitHub Security, not Filigree. For Wardline's findings to reach Filigree at all, something has to read Wardline's SARIF output and POST it.
+Wardline today has no HTTP client (`reviews/pre-restructure/integration-recon.md:339`). `wardline/pyproject.toml:22` declares `dependencies = []` and the CI pipeline uploads SARIF to GitHub Security, not Filigree. For Wardline's findings to reach Filigree at all, something has to read Wardline's SARIF output and POST it.
 
 The `loom.md` §5 failure test names pipeline coupling as a federation violation: "if a pair of sibling products (X, Z) cannot exchange data except through a third sibling (Y)." The (Wardline, Filigree) pair cannot compose directly in v0.1 — they compose only when Clarion is present and someone runs `clarion sarif import`. That is the triangle the panel flagged in its doctrine synthesis (`11-doctrine-panel-synthesis.md` paragraph on the SARIF triangle) and the scope-commitments memo confirmed as an open consequence (`v0.1-scope-commitments.md:72`).
 
@@ -168,6 +168,5 @@ A `loom-findings` package that both products import; the library owns emission t
 - [Loom doctrine §5 (v0.1 asterisks, asterisk 1)](../../suite/loom.md) — pipeline-coupling asterisk for (Wardline, Filigree) with this ADR as the retirement condition.
 - [Clarion v0.1 detailed design §9 (Wardline prerequisites) item 3](../v0.1/detailed-design.md) (line 1361) — Option A / Option B enumeration.
 - [Clarion v0.1 scope commitments](../v0.1/plans/v0.1-scope-commitments.md) (lines 72, 190, 202) — default deferral; spike promotion condition.
-- [Clarion v0.1 integration reconnaissance §4.3](../v0.1/reviews/integration-recon.md) (line 339) — "Wardline has zero HTTP client code"; empirical basis for the v0.2 deferral default.
+- [Clarion v0.1 integration reconnaissance §4.3](../v0.1/reviews/pre-restructure/integration-recon.md) (line 339) — "Wardline has zero HTTP client code"; empirical basis for the v0.2 deferral default.
 - [Panel doctrine synthesis](../v0.1/reviews/panel-2026-04-17/11-doctrine-panel-synthesis.md) — SARIF triangle framing; asterisk requirement.
-- [Post-commitment work brief Block C2](../v0.1/plans/post-commitment-work-brief.md) — spike scope and decision record location.

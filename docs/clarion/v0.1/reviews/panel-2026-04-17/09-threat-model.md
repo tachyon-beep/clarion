@@ -3,7 +3,7 @@
 **Reviewer role**: Threat analyst (STRIDE + attack trees)
 **Date**: 2026-04-17
 **Scope**: Docs-only Clarion v0.1. Pre-implementation.
-**Inputs**: `requirements.md`, `system-design.md`, `detailed-design.md`, ADR-002/003/004, `reviews/integration-recon.md`.
+**Inputs**: `requirements.md`, `system-design.md`, `detailed-design.md`, ADR-002/003/004, `reviews/pre-restructure/integration-recon.md` (moved 2026-04-18; original location `reviews/integration-recon.md`).
 
 This is a reflexive-hygiene exercise. Clarion is itself a security tool; a weak threat model in v0.1 would undercut its credibility. The design already contains a §10 "Security" section with a short threat table, five NFR-SEC requirements, and a named list of "defences NOT in v0.1." This review extends it: mapping every trust boundary, STRIDE'ing each, and calling out the unstated assumptions that carry real risk.
 

@@ -1,7 +1,7 @@
 # Clarion v0.1 — System Design
 
-**Status**: Draft — mid-level technical companion to requirements
-**Date**: 2026-04-17
+**Status**: Baselined for v0.1 implementation (post-ADR sprint 2026-04-18) — mid-level technical companion to requirements
+**Baseline**: 2026-04-17 · **Last updated**: 2026-04-18
 **Primary author**: qacona@gmail.com (with Claude)
 **Companion documents**:
 - [requirements.md](./requirements.md) — requirements (the *what*)
@@ -1215,15 +1215,33 @@ The parallel listing in [detailed-design.md §11](./detailed-design.md#11-archit
 
 ### Writing cadence
 
-ADR-001 through ADR-004 are authored and Accepted as standalone files in [../adr/](../adr/README.md). ADR-005 through ADR-022 are written alongside early implementation. P0 items (ADR-006, -007, -011, -013 promoted from P1 to P0 per the 2026-04-17 review panel; ADR-014..-018, -021, -022 native P0) are authored in a focused sprint before Rust implementation begins; P1 and P2 items are written alongside the code that first depends on them. Any decision reversal during implementation (e.g., "writer-actor doesn't work; switching to shadow-DB") requires a new dated ADR revision, not an edit to the original.
+ADR-001 through ADR-004, ADR-006, ADR-007, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016, ADR-017, ADR-018, ADR-021, and ADR-022 are authored and Accepted as standalone files in [../adr/](../adr/README.md). The remaining backlog items are ADR-005, ADR-009, ADR-010, ADR-019, and ADR-020; they stay summarised here and in the ADR index until the code that depends on them is ready to land. Any decision reversal during implementation (e.g., "writer-actor doesn't work; switching to shadow-DB") requires a new dated ADR revision, not an edit to the original.
 
 Authored ADR text (context, decision, alternatives considered, consequences, status) lives in [../adr/README.md](../adr/README.md). These summaries are the navigation aid; the canonical record of completed decisions is the ADR collection itself.
 
 ---
 
-## Glossary (pointer)
+## Glossary
 
-Terms used in this document are defined in the detailed-design's Appendix B. This section is a pointer-only stub to avoid duplication — the detailed-design's glossary is the canonical vocabulary for the three-layer docset.
+The terms below are the ones this system-design layer relies on most heavily:
+
+| Term | Definition |
+|---|---|
+| **Briefing** | Structured summary answering a fixed set of questions about an entity. |
+| **Entity** | Typed node in Clarion's property graph. |
+| **Entity ID** | Stable identifier of the form `{plugin_id}:{kind}:{canonical_qualified_name}`. |
+| **Edge** | Typed relationship between entities such as `contains`, `calls`, or `imports`. |
+| **Finding** | Structured claim-with-evidence; may be a defect, fact, classification, metric, or suggestion. |
+| **Guidance fingerprint** | Hash of the guidance sheets applied to a query; part of the summary-cache key. |
+| **Plugin manifest** | YAML declaration of a plugin's kinds, edges, rules, and capabilities. |
+| **Scope lens** | Query/session filter that biases neighbour lookups toward a relationship family. |
+| **Tier** | Wardline trust classification preserved verbatim by Clarion. |
+| **Writer-actor** | Single task that owns SQLite writes; other tasks submit mutations through it. |
+| **Pre-ingest redaction** | Secret scan that runs before any file content is sent to the LLM provider. |
+| **Capability probe / compat report** | Startup check of sibling-tool availability that emits one compatibility finding. |
+| **`scan_run_id`** | Filigree-owned identifier for a finding-emission run. |
+
+See [detailed-design.md](./detailed-design.md) Appendix B for the full glossary.
 
 ---
 

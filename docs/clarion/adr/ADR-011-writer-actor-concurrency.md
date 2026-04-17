@@ -93,7 +93,7 @@ The writer-actor + per-N-files design is a **design-time assumption** that WAL +
 - Checkpoint duration at WAL-size boundaries.
 - Read-snapshot staleness windows when `serve` is under load from an agent.
 
-Block C1 (cost-model spike, `post-commitment-work-brief.md`) observes analyze-phase timing; a v0.2 follow-up task (`NG-28` — proposed) runs a dedicated analyze+serve concurrency test. This ADR ships the design; validation is explicitly future work.
+The scope-commitment memo's Validation section observes analyze-phase timing; a v0.2 follow-up task (`NG-28` — proposed there) runs a dedicated analyze+serve concurrency test. This ADR ships the design; validation is explicitly future work.
 
 ## Alternatives Considered
 
@@ -173,8 +173,8 @@ Already rejected in ADR-001 for the storage-engine selection. Re-cited here beca
 
 ## References
 
-- [Clarion v0.1 design review §2.2](../v0.1/reviews/design-review.md) (lines 56-66) — original CRITICAL flag; writer-actor and shadow-DB options.
+- [Clarion v0.1 design review §2.2](../v0.1/reviews/pre-restructure/design-review.md) (lines 56-66) — original CRITICAL flag; writer-actor and shadow-DB options.
 - [Clarion v0.1 detailed design §3 (Concurrency)](../v0.1/detailed-design.md) (lines 758-769) — the implementation detail this ADR formalises.
 - [Clarion v0.1 requirements §NFR-RELIABILITY-02](../v0.1/requirements.md) (line 857) — WAL + writer-actor + checkpoint discipline as crash-safety requirement.
 - [Clarion v0.1 system design §4 Storage](../v0.1/system-design.md) — SQLite rationale; WAL mode claim.
-- [Clarion v0.1 post-commitment work brief — ADR-011](../v0.1/plans/post-commitment-work-brief.md) — P0 promotion from P1; unvalidated-assumption call-out.
+- [Clarion v0.1 scope commitments — ADR sprint + validation](../v0.1/plans/v0.1-scope-commitments.md) (lines 181-195, 249-251) — P0 promotion from P1 and the explicit follow-up validation task.

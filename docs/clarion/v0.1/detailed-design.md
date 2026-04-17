@@ -1,16 +1,16 @@
 # Clarion v0.1 — Detailed Design Reference
 
-**Status**: Layer 3 of the Clarion v0.1 docset — implementation-level reference. Canonical home of the ADR backlog, SQL schema, Rust struct definitions, full YAML config example, exact rule-ID catalogues, wire-format mapping tables, and cross-tool prerequisite lists.
-**Date**: 2026-04-17
-**Primary author**: john@foundryside.dev (with Claude)
+**Status**: Baselined for v0.1 implementation (post-ADR sprint 2026-04-18) — Layer 3 of the Clarion v0.1 docset, implementation-level reference. Canonical home of the ADR backlog, SQL schema, Rust struct definitions, full YAML config example, exact rule-ID catalogues, wire-format mapping tables, and cross-tool prerequisite lists.
+**Baseline**: 2026-04-17 · **Last updated**: 2026-04-18
+**Primary author**: qacona@gmail.com (with Claude)
 **First customer target**: `/home/john/elspeth` (~425k LOC Python)
-**Revision**: 5 (post docs-restructure 2026-04-17; see Appendix D for revision history)
+**Revision**: 5 (final pre-restructure single-file revision; see Appendix D for full history). Post-restructure the three layered docs track changes via git log plus dated edits in this preamble; there is no unified "Rev 6."
 
 **Companion documents**:
 - [requirements.md](./requirements.md) — requirements (the *what*; REQ-* / NFR-* / CON-* / NG-*)
 - [system-design.md](./system-design.md) — system design (the *how*, mid-level; architecture, mechanisms, diagrams)
-- [reviews/design-review.md](./reviews/design-review.md) — design review that drove revisions 2-4
-- [reviews/integration-recon.md](./reviews/integration-recon.md) — integration reality check against Filigree / Wardline
+- [reviews/pre-restructure/design-review.md](./reviews/pre-restructure/design-review.md) — design review that drove revisions 2-4
+- [reviews/pre-restructure/integration-recon.md](./reviews/pre-restructure/integration-recon.md) — integration reality check against Filigree / Wardline
 
 ---
 
@@ -55,7 +55,7 @@ version = "1.0"
 
 ### Plugin manifest shape
 
-Plugin ships a manifest read by the core on `initialized`. Example (Python plugin):
+Plugin ships a manifest read by the core on `initialized`. Abridged example (Python plugin):
 
 ```yaml
 name: python
@@ -120,12 +120,13 @@ capabilities:
   structural_findings: true
   factual_findings: true
 
-rules:
+rules:  # abridged example; exact emitted catalogue lives in §5 and the authored ADR set
   - { id: CLA-PY-STRUCTURE-001, description: "Circular import detected", severity: WARN }
   - { id: CLA-PY-STRUCTURE-002, description: "Module-level side effect at import time", severity: INFO }
   - { id: CLA-FACT-TODO, description: "TODO marker in comment", severity: INFO, kind: fact }
   - { id: CLA-FACT-ENTRYPOINT, description: "CLI/HTTP entry point detected", severity: INFO, kind: fact }
-  # ... etc.
+  # Additional plugin-declared rules are omitted here for readability; see §5 for
+  # the concrete emitted findings and ADR-017 / ADR-022 for naming rules.
 
 prompt_templates:
   function:   templates/summarise_function.md

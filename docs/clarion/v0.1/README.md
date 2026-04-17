@@ -10,11 +10,8 @@ This folder is the canonical Clarion v0.1 document set.
 
 ## Supporting docs
 
-- [reviews/design-review.md](./reviews/design-review.md) — design review of the pre-restructure single-file design.
-- [reviews/integration-recon.md](./reviews/integration-recon.md) — integration reality check against Filigree and Wardline.
-- [plans/v0.1-scope-commitments.md](./plans/v0.1-scope-commitments.md) — pre-implementation scope decisions (Q1/Q2/Q3) and the ADR writing sprint that follows.
-- [plans/post-commitment-work-brief.md](./plans/post-commitment-work-brief.md) — self-contained handoff brief for the post-commitment rework (ADR sprint, auth flip, cost-model spike).
-- [plans/docs-restructure-plan.md](./plans/docs-restructure-plan.md) — historical plan that produced this folder structure.
+- [reviews/README.md](./reviews/README.md) — retained historical reviews and panel outputs that shaped the current docset.
+- [plans/v0.1-scope-commitments.md](./plans/v0.1-scope-commitments.md) — dated scope and decision memo for the v0.1 design freeze.
 - [../adr/README.md](../adr/README.md) — authored ADRs and remaining decision backlog.
 
 ## Reading order

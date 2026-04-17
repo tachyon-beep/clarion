@@ -148,7 +148,7 @@ v0.1 tokens carry scope claims — read-only catalog, read-only findings, submit
 
 ## Related Decisions
 
-- [ADR-005](./ADR-005-clarion-git-committable.md) (pending) — `.clarion/` git-committable by default, but `.clarion/socket` and `.clarion/auth.token` are runtime artifacts that must be excluded. ADR-005 picks the `.gitignore` rules that protect against both.
+- ADR-005 (pending; see the [ADR index backlog](./README.md)) — `.clarion/` git-committable by default, but `.clarion/socket` and `.clarion/auth.token` are runtime artifacts that must be excluded. ADR-005 picks the `.gitignore` rules that protect against both.
 - [ADR-021](./ADR-021-plugin-authority-hybrid.md) — closes the plugin-side attack surface (T-01, T-08, T-11, T-12); this ADR closes the HTTP-side attack surface (T-02, T-05). Together they are the panel's "three non-negotiable v0.1 controls" (third being ADR-013, secret scanner).
 
 ## References
@@ -158,4 +158,3 @@ v0.1 tokens carry scope claims — read-only catalog, read-only findings, submit
 - [Clarion v0.1 system design §10 "Loopback is not a security boundary"](../v0.1/system-design.md) — the paragraph this ADR flips; updated in the same commit.
 - [Clarion v0.1 detailed design §7 Token auth — full spec](../v0.1/detailed-design.md) (lines 1286-1304) — the token machinery this ADR reuses as the fallback.
 - [Clarion v0.1 scope commitments — action 5](../v0.1/plans/v0.1-scope-commitments.md) (line 199) — the commitment mandate.
-- [Post-commitment work brief — Block B](../v0.1/plans/post-commitment-work-brief.md) — scoped acceptance for this ADR + surrounding edits.
