@@ -8,18 +8,18 @@
 
 ## 1. What Loom is
 
-Loom is a three-product suite for code governance and assurance, with a proposed fourth product. Its first tools are **Clarion**, **Filigree**, and **Wardline**, each of which can operate independently, but together form a single operating fabric. The fourth product, **Shuttle**, is proposed and not yet in flight.
+Loom is a suite for enterprise-grade code governance on small teams. Its first tools are **Clarion**, **Filigree**, and **Wardline**, each fully authoritative in its domain and fully usable on its own. When composed, they enrich one another through narrow, additive protocols — but each remains independently load-bearing for the work it already does. A fourth product, **Shuttle**, is proposed and not yet in flight.
 
-The metaphor is deliberate: distinct threads stay distinct but gain value by being woven together. Loom is not a platform that subsumes its constituent tools — it is the coordinated federation they compose into.
+The metaphor is deliberate: distinct threads stay distinct but gain value by being woven together. Loom is a **family name** and a **composition doctrine** — not a platform, not a shared runtime, not a store, and not a broker. There is nothing called "Loom" to install, deploy, or keep running. What exists are the member products, and a set of narrow interop contracts between them.
 
 ## 2. The products and their authoritative domains
 
-Each Loom product is authoritative for exactly one bounded concern:
+Each Loom product is authoritative for exactly one bounded concern, and that authority lives in the product itself — not in any shared layer:
 
-- **Clarion** — structural truth about the codebase. Answers "what is this codebase and where should I touch?"
-- **Filigree** — work state and workflow lifecycle. Answers "what work exists, what state is it in, and what happened?"
-- **Wardline** — trust policy and rule enforcement. Answers "what is allowed, and does this still satisfy the declared constraints?"
-- **Shuttle** *(proposed)* — transactional scoped change execution. Answers "carry this approved change through the weave, under guard rails."
+- **Clarion** — structural truth about the codebase. Answers "what is this codebase and where should I touch?" Owns the entity catalog, the code graph, and guidance sheets.
+- **Filigree** — work state and workflow lifecycle. Answers "what work exists, what state is it in, and what happened?" Owns issues, observations, and finding triage state.
+- **Wardline** — trust policy and rule enforcement. Answers "what is allowed, and does this still satisfy the declared constraints?" Owns trust declarations, baselines, and policy findings. Notably, Wardline's "configuration" is the source code itself plus the adjacent declarations — it does not have a separate authoritative config store.
+- **Shuttle** *(proposed)* — transactional scoped change execution. Answers "carry this approved change through the weave, under guard rails." Would own the execution record of applied changes and their rollback provenance.
 
 Shuttle's scope is deliberately narrow: it receives a scoped change intent, binds it to files or entities, orders the edits, applies them incrementally with pre- and post-change checks, rolls back on failure, and lints / commits / emits telemetry on success. It does not plan, triage, or reason about the code it is editing.
 
@@ -27,7 +27,7 @@ Shuttle's scope is deliberately narrow: it receives a scoped change intent, bind
 
 **Loom is a federation, not a monolith. Each member product is authoritative in one bounded domain. Integration must be additive, not compulsory. No Loom product may require the full suite to justify its existence.**
 
-This is the founding architectural law. It protects against the failure mode where tools are nominally separate but only deliver value when deployed together — hidden lock-in disguised as modularity.
+This is the founding architectural law. There is no Loom runtime, no Loom config layer, and no Loom store. Loom is a family name, a composition doctrine, and a set of narrow interop contracts — nothing more. The rule protects against the stealth-monolith failure mode: a "lightweight glue layer" that quietly becomes the real system of record, reducing sibling products to thin clients and making solo mode dishonest.
 
 ## 4. The composition law
 
@@ -39,7 +39,41 @@ Any Loom product must satisfy all three modes:
 
 Pairwise composability is a hard rule, not an aspiration. A product that only works when all siblings are present is a feature of a monolith wearing modular clothing.
 
-## 5. The go/no-go test for future products
+## 5. Enrichment, not load-bearing
+
+**A sibling product may enrich another product's view, but it must never be required for that product's semantics to make sense.**
+
+This is the rule that keeps integration additive. It has a concrete test and concrete consequences:
+
+### The failure test
+
+**If removing a sibling product changes the *meaning* of another product's own data, Loom has centralised too far.** Sibling absence may reduce convenience or automation; it must not alter semantics. Less capability is acceptable; incoherent data is not.
+
+### Concrete examples
+
+- **Filigree** creates and closes tickets exactly the same way whether Clarion is installed or not. Clarion makes the tickets richer — entity context, file references, structural findings linked to issues — but doesn't change their meaning. You can file a bug, work it, and close it with Clarion absent or broken.
+- **Wardline** enforces trust policy whether Filigree is ingesting findings or not. Findings reach Wardline's own SARIF output regardless of whether a downstream triage system exists.
+- **Clarion** builds its catalog whether Wardline is present or not. Wardline's annotations *enrich* Clarion's entity metadata with trust-tier and policy-semantic information, but Clarion's structural truth is independent of Wardline's policy truth.
+- **Shuttle**, if built, would execute changes whether any sibling is present. Sibling tools enrich its telemetry (which Filigree ticket? which Clarion entity? which Wardline policy?) but are never required for a change to apply or roll back.
+
+### Why this matters
+
+Enrichment is the shape of integration that preserves federation. Load-bearing integration collapses federation into monolith by another name. The moment one product *needs* another to make sense of its own data, the composition law becomes dishonest — "standalone mode" works only because the sibling is still running somewhere, and the illusion of modularity collapses the first time deployment doesn't match.
+
+## 6. What Loom is NOT
+
+Because the strongest pressure on this charter comes from "wouldn't it be easier if we just…" proposals, the disclaimer is explicit. Loom is **not**:
+
+- **A shared runtime or daemon.** There is no `loomd`, no broker, no orchestrator. Member products do not phone home to a Loom process.
+- **A shared configuration layer.** Each product configures its own integrations in its own config. Clarion's config names Filigree's endpoint directly; there is no central registry that everyone consults.
+- **A central store or database.** Each product owns its data locally. No shared SQLite/Postgres/object-store sits under the suite.
+- **A system of record for any cross-product state.** Finding lifecycle lives in Filigree. Entity identity lives in Clarion. Policy baselines live in Wardline. Execution provenance (if Shuttle ships) lives in Shuttle. Loom does not own or mirror these.
+- **An identity reconciliation service.** When cross-scheme translation is needed — e.g. Wardline qualname → Clarion entity ID — the product that *cares* does the translation, because that product is the one whose authority needs it. Clarion translates qualnames because Clarion owns the catalog that makes them meaningful. There is no neutral "Loom identity oracle."
+- **A capability negotiation bus.** Products probe each other directly via their own surfaces (HTTP endpoints, MCP tools, CLI flags). Version skew is handled bilaterally, not through a Loom-level registry.
+
+The test for any proposed addition: if the proposal introduces something that would need to be *running* or *present* for the suite to work, it violates federation. Integration protocols, schemas, and narrow contracts are fine. Shared infrastructure that sibling products *depend on* is not.
+
+## 7. The go/no-go test for future products
 
 Before adopting any new product into Loom, it must pass all four:
 
@@ -50,29 +84,11 @@ Before adopting any new product into Loom, it must pass all four:
 
 If the answer to any question is no, the candidate is a feature, a protocol, or an adapter — not a product. It may still belong in Loom's surface area, but not as a named member.
 
-## 6. What Loom config owns
+## 8. Naming
 
-Loom config is the shared discovery and identity layer. It owns:
+Member products are named from weaving mechanics — Clarion, Filigree, Wardline, Shuttle — as distinct proper names rather than subdivisions. There is no "Loom Guard," "Loom Workflow," or "Loom Execute"; each product earns its own identity. The family name sits above the products without dominating them, and — per §3 and §6 — it does not name any component that gets installed or runs.
 
-- **Discovery** — how products find one another on a given host
-- **Identity mapping** — canonical IDs and translation across product-specific naming schemes
-- **Endpoint wiring** — where to reach sibling HTTP / MCP / protocol surfaces
-- **Capability advertisement** — what each installed product reports it can do, so siblings can degrade gracefully when a capability is absent
-
-Loom config explicitly does **not** own:
-
-- Shared business logic
-- Central orchestration
-- Cross-product workflow state
-- Any form of "Loom daemon" or mandatory runtime
-
-The moment Loom becomes a mandatory brain, the composition law collapses. Federation survives only by refusing to centralise.
-
-## 7. Naming
-
-Member products are named from weaving mechanics — Clarion, Filigree, Wardline, Shuttle — as distinct proper names rather than subdivisions. There is no "Loom Guard," "Loom Workflow," or "Loom Execute"; each product earns its own identity. The family name sits above the products without dominating them.
-
-## 8. Status
+## 9. Status
 
 | Product | Status |
 |---|---|
@@ -81,6 +97,6 @@ Member products are named from weaving mechanics — Clarion, Filigree, Wardline
 | Wardline | Built; in active commit-cadence use |
 | Shuttle | Proposed; not in flight; separate design effort when prioritised |
 
-The v0.1 Loom suite is Clarion + Filigree + Wardline. Shuttle enters the suite only when it passes the go/no-go test above and has its own spec, design, and validating customer.
+The v0.1 Loom suite is Clarion + Filigree + Wardline. Shuttle enters the suite only when it passes the go/no-go test (§7) and has its own spec, design, and validating customer.
 
-This charter is expected to outlive v0.1 and shape all subsequent product gates.
+This charter is expected to outlive v0.1 and shape all subsequent product gates. Its load-bearing sentence is in §5: **enrichment, not load-bearing**. If that principle is ever compromised, the rest collapses.
