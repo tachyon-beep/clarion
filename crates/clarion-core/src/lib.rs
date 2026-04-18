@@ -4,5 +4,7 @@
 //! crates depend on it; it depends on neither.
 
 pub mod entity_id;
+pub mod llm_provider;
 
 pub use entity_id::{EntityId, EntityIdError, entity_id};
+pub use llm_provider::{LlmProvider, NoopProvider};
