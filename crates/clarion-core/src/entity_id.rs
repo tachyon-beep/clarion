@@ -105,6 +105,24 @@ pub fn entity_id(
     )))
 }
 
+/// Validate that a string matches the ADR-022 identifier grammar `[a-z][a-z0-9_]*`.
+///
+/// Used by both the entity-ID assembler and the manifest parser to enforce a
+/// single canonical check — no divergent copies.
+pub(crate) fn validate_kind_grammar(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_lowercase() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
 fn validate_grammar(field: &'static str, value: &str) -> Result<(), EntityIdError> {
     if value.is_empty() {
         return Err(EntityIdError::EmptySegment { field });

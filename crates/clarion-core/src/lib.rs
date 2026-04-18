@@ -5,6 +5,8 @@
 
 pub mod entity_id;
 pub mod llm_provider;
+pub mod plugin;
 
 pub use entity_id::{EntityId, EntityIdError, entity_id};
 pub use llm_provider::{LlmProvider, NoopProvider};
+pub use plugin::{Manifest, ManifestError, parse_manifest};
