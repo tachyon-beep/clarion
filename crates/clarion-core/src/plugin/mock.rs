@@ -238,7 +238,15 @@ impl MockPlugin {
                 Err(e) => return Err(MockError::Transport(e)),
             };
 
-            self.dispatch(&frame)?;
+            if let Err(e) = self.dispatch(&frame) {
+                // Preserve the failing frame and all subsequent bytes so that
+                // the caller can inspect or retry. `pos` is the start of the
+                // frame that failed dispatch — restore from there so the inbox
+                // contains the full failing frame plus anything queued behind it.
+                let inner = cursor.into_inner();
+                self.inbox = inner[pos..].to_vec();
+                return Err(e);
+            }
         }
 
         Ok(())
@@ -331,6 +339,12 @@ impl MockPlugin {
     // ── Response builders ─────────────────────────────────────────────────────
 
     fn respond_initialize(&mut self, id: i64) -> Result<(), MockError> {
+        if self.state != MockState::Fresh {
+            return Err(MockError::Protocol(format!(
+                "'initialize' received in unexpected state {:?}",
+                self.state
+            )));
+        }
         if self.behaviour == MockBehaviour::Oversize {
             // Write a frame whose Content-Length declares MOCK_OVERSIZE_BYTES
             // but whose body is a short placeholder. The ceiling check in
@@ -378,6 +392,12 @@ impl MockPlugin {
     }
 
     fn respond_shutdown(&mut self, id: i64) -> Result<(), MockError> {
+        if !matches!(self.state, MockState::Initialized | MockState::Ready) {
+            return Err(MockError::Protocol(format!(
+                "'shutdown' received in unexpected state {:?}",
+                self.state
+            )));
+        }
         let result = ShutdownResult {};
         let env = ResponseEnvelope {
             jsonrpc: JsonRpcVersion,
@@ -405,8 +425,6 @@ impl MockPlugin {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
     use crate::plugin::{
         AnalyzeFileParams, InitializeParams, InitializedNotification, ResponsePayload,
@@ -440,7 +458,7 @@ mod tests {
         // Step 2+3: build initialize request and write it as a frame.
         let params = InitializeParams {
             protocol_version: "1.0".into(),
-            project_root: PathBuf::from("/tmp/x"),
+            project_root: "/tmp/x".to_owned(),
         };
         send_request(&mut mock, "initialize", &params, 1);
 
@@ -489,7 +507,7 @@ mod tests {
             "initialize",
             &InitializeParams {
                 protocol_version: "1.0".into(),
-                project_root: PathBuf::from("/tmp/x"),
+                project_root: "/tmp/x".to_owned(),
             },
             1,
         );
@@ -507,7 +525,7 @@ mod tests {
             &mut mock,
             "analyze_file",
             &AnalyzeFileParams {
-                file_path: PathBuf::from("src/lib.py"),
+                file_path: "src/lib.py".to_owned(),
             },
             2,
         );
@@ -545,7 +563,7 @@ mod tests {
             "initialize",
             &InitializeParams {
                 protocol_version: "1.0".into(),
-                project_root: PathBuf::from("/tmp/x"),
+                project_root: "/tmp/x".to_owned(),
             },
             1,
         );
@@ -569,7 +587,7 @@ mod tests {
             &mut mock,
             "analyze_file",
             &AnalyzeFileParams {
-                file_path: PathBuf::from("src/lib.py"),
+                file_path: "src/lib.py".to_owned(),
             },
             2,
         );
@@ -603,7 +621,7 @@ mod tests {
             "initialize",
             &InitializeParams {
                 protocol_version: "1.0".into(),
-                project_root: PathBuf::from("/tmp/x"),
+                project_root: "/tmp/x".to_owned(),
             },
             1,
         );
@@ -622,6 +640,122 @@ mod tests {
                 if observed == MOCK_OVERSIZE_BYTES && c == ceiling
             ),
             "expected FrameTooLarge {{ observed: {MOCK_OVERSIZE_BYTES}, ceiling: {ceiling} }}, got: {err}"
+        );
+    }
+
+    // ── B3 test: double initialize is rejected ────────────────────────────────
+
+    #[test]
+    fn mock_rejects_double_initialize() {
+        // Sending initialize twice must trigger MockError::Protocol on the
+        // second tick because the mock is no longer in MockState::Fresh.
+        let mut mock = MockPlugin::new_compliant();
+
+        // First initialize — must succeed.
+        send_request(
+            &mut mock,
+            "initialize",
+            &InitializeParams {
+                protocol_version: "1.0".into(),
+                project_root: "/tmp/x".to_owned(),
+            },
+            1,
+        );
+        mock.tick().expect("first initialize must succeed");
+        // Drain the response.
+        read_frame(mock.stdout(), 1024 * 1024).expect("read first initialize response");
+
+        // Second initialize — the mock is now Initialized, not Fresh.
+        send_request(
+            &mut mock,
+            "initialize",
+            &InitializeParams {
+                protocol_version: "1.0".into(),
+                project_root: "/tmp/x".to_owned(),
+            },
+            2,
+        );
+        let err = mock.tick().expect_err("second initialize must fail");
+        assert!(
+            matches!(err, MockError::Protocol(ref msg) if msg.contains("Initialized")),
+            "error must mention the unexpected state (Initialized); got: {err}"
+        );
+    }
+
+    // ── B4 test: inbox preserved after dispatch error ─────────────────────────
+
+    #[test]
+    fn mock_tick_preserves_remaining_inbox_after_dispatch_error() {
+        // Arrange: compliant mock. Enqueue TWO frames in one batch:
+        //   frame 1 — valid initialize (will succeed, transitions to Initialized)
+        //   frame 2 — second initialize (will fail B3 state guard)
+        // tick() must return Err and the inbox must still hold frame 2's bytes.
+        let mut mock = MockPlugin::new_compliant();
+
+        // Build frame 1: valid initialize.
+        let init_params = InitializeParams {
+            protocol_version: "1.0".into(),
+            project_root: "/tmp/x".to_owned(),
+        };
+        {
+            use crate::plugin::make_request;
+            let env = make_request("initialize", &init_params, 1);
+            let body = serde_json::to_vec(&env).expect("serialise frame 1");
+            write_frame(mock.stdin(), &Frame { body }).expect("write frame 1");
+        }
+
+        // Build frame 2: second initialize (will trigger state guard).
+        {
+            use crate::plugin::make_request;
+            let env = make_request("initialize", &init_params, 2);
+            let body = serde_json::to_vec(&env).expect("serialise frame 2");
+            write_frame(mock.stdin(), &Frame { body }).expect("write frame 2");
+        }
+
+        // Record approximate minimum byte length of one framed initialize message
+        // so we can assert the inbox is non-trivially non-empty.
+        let approx_frame_min = 10; // conservative: even a tiny frame has at least header + body
+
+        // tick() — frame 1 succeeds, frame 2 errors.
+        let err = mock
+            .tick()
+            .expect_err("tick must error on double initialize");
+        assert!(
+            matches!(err, MockError::Protocol(_)),
+            "expected Protocol error; got: {err}"
+        );
+
+        // Inbox must contain the remaining bytes (frame 2 was not dispatched but
+        // its bytes should have been preserved by the B4 fix).
+        // Note: after B3 state guard fires, the dispatch error returns before
+        // frame 2 is written to the outbox, so only frame 1's response appears.
+        assert!(
+            mock.inbox.len() >= approx_frame_min,
+            "inbox must still hold frame 2 bytes after dispatch error; \
+             inbox.len() = {}",
+            mock.inbox.len()
+        );
+
+        // Outbox must contain exactly one response frame (the successful first
+        // initialize response). Read it to confirm.
+        let frame = read_frame(mock.stdout(), 1024 * 1024)
+            .expect("must be able to read the first initialize response from outbox");
+        let resp: ResponseEnvelope =
+            serde_json::from_slice(&frame.body).expect("deserialise first initialize response");
+        assert_eq!(
+            resp.id, 1,
+            "outbox frame must be the first initialize response"
+        );
+        assert!(
+            matches!(resp.payload, ResponsePayload::Result(_)),
+            "first initialize response must be a Result"
+        );
+
+        // No second frame in the outbox.
+        let no_frame = read_frame(mock.stdout(), 1024 * 1024);
+        assert!(
+            no_frame.is_err(),
+            "outbox must contain exactly one frame, but a second was readable"
         );
     }
 }

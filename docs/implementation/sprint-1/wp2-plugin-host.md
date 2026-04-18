@@ -95,11 +95,12 @@ parser + validator; WP3 ships the first real manifest.
 
 ```toml
 [plugin]
-name = "clarion-plugin-python"           # unique plugin id
+name = "clarion-plugin-python"           # package name; informational (hyphens OK, human-readable)
+plugin_id = "python"                      # identifier fed to entity_id(); must match [a-z][a-z0-9_]* (ADR-022)
 version = "0.1.0"                         # semver
 protocol_version = "1.0"                  # matches ADR-002 version
 executable = "clarion-plugin-python"      # command on PATH (see L9)
-language = "python"                       # informational; plugin_id in L2 EntityId comes from [plugin].name
+language = "python"                       # informational tag
 extensions = ["py"]                       # file extensions this plugin claims
 
 [capabilities.runtime]

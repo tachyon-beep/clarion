@@ -32,8 +32,6 @@
 //! notifications) because Sprint 1's walking skeleton is core-initiated only.
 //! Full bidirectional dispatch is Task 6's concern.
 
-use std::path::PathBuf;
-
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::{Map, Value};
 
@@ -205,8 +203,12 @@ pub struct ProtocolError {
 pub struct InitializeParams {
     /// Protocol version the core speaks, e.g. `"1.0"`.
     pub protocol_version: String,
-    /// Absolute path to the project root being analysed.
-    pub project_root: PathBuf,
+    /// Absolute path to the project root being analysed, as a UTF-8 string.
+    ///
+    /// Using `String` rather than `PathBuf` makes the wire format statically
+    /// UTF-8 safe. Task 4's jail owns the `PathBuf → String` conversion and
+    /// UTF-8 validation at the boundary.
+    pub project_root: String,
 }
 
 /// Result for `initialize` (plugin → core).
@@ -239,8 +241,9 @@ pub struct InitializedNotification {}
 /// Params for `analyze_file` (core → plugin).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AnalyzeFileParams {
-    /// Path to the file to analyse (relative or absolute; plugin resolves).
-    pub file_path: PathBuf,
+    /// Path to the file to analyse (relative or absolute; plugin resolves),
+    /// as a UTF-8 string. See [`InitializeParams::project_root`] for rationale.
+    pub file_path: String,
 }
 
 /// Result for `analyze_file` (plugin → core).
@@ -328,7 +331,7 @@ mod tests {
     fn proto_01_initialize_params_round_trips() {
         let params = InitializeParams {
             protocol_version: "1.0".to_owned(),
-            project_root: PathBuf::from("/home/user/project"),
+            project_root: "/home/user/project".to_owned(),
         };
         let json = serde_json::to_string(&params).expect("serialise");
         let back: InitializeParams = serde_json::from_str(&json).expect("deserialise");
@@ -361,7 +364,7 @@ mod tests {
     fn proto_03_request_envelope_serialises_correctly() {
         let params = InitializeParams {
             protocol_version: "1.0".to_owned(),
-            project_root: PathBuf::from("/proj"),
+            project_root: "/proj".to_owned(),
         };
         let env = make_request("initialize", &params, 1);
         let json = serde_json::to_string(&env).expect("serialise");
@@ -444,7 +447,7 @@ mod tests {
         // initialize params
         let p = InitializeParams {
             protocol_version: "1.0".to_owned(),
-            project_root: PathBuf::from("/proj"),
+            project_root: "/proj".to_owned(),
         };
         let back: InitializeParams =
             serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
@@ -469,7 +472,7 @@ mod tests {
 
         // analyze_file params
         let p = AnalyzeFileParams {
-            file_path: PathBuf::from("src/main.py"),
+            file_path: "src/main.py".to_owned(),
         };
         let back: AnalyzeFileParams =
             serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();

@@ -135,8 +135,13 @@ pub struct Manifest {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginMeta {
-    /// Unique plugin ID, e.g. `"clarion-plugin-python"`.
+    /// Package name, e.g. `"clarion-plugin-python"`. Informational; hyphens allowed.
     pub name: String,
+
+    /// Identifier fed to `entity_id()`, e.g. `"python"`. Must satisfy `[a-z][a-z0-9_]*`
+    /// per ADR-022. Distinct from `name` so human-readable package names (which may
+    /// contain hyphens) do not conflict with the entity-ID grammar.
+    pub plugin_id: String,
 
     /// Plugin version (semver), e.g. `"0.1.0"`.
     pub version: String,
@@ -264,6 +269,18 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     if manifest.plugin.name.is_empty() {
         return Err(ManifestError::Malformed {
             message: "[plugin].name must not be empty".to_owned(),
+        });
+    }
+    // plugin_id must satisfy the ADR-022 kind grammar [a-z][a-z0-9_]*.
+    if manifest.plugin.plugin_id.is_empty() {
+        return Err(ManifestError::Malformed {
+            message: "[plugin].plugin_id must not be empty".to_owned(),
+        });
+    }
+    if !validate_kind_grammar(&manifest.plugin.plugin_id) {
+        return Err(ManifestError::GrammarViolation {
+            field: "plugin_id",
+            value: manifest.plugin.plugin_id.clone(),
         });
     }
     if manifest.plugin.extensions.is_empty() {
@@ -399,6 +416,7 @@ mod tests {
     const VALID_MANIFEST: &str = r#"
 [plugin]
 name = "clarion-plugin-python"
+plugin_id = "mockplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "clarion-plugin-python"
@@ -426,6 +444,7 @@ ontology_version = "0.1.0"
 
         // [plugin]
         assert_eq!(manifest.plugin.name, "clarion-plugin-python");
+        assert_eq!(manifest.plugin.plugin_id, "mockplugin");
         assert_eq!(manifest.plugin.version, "0.1.0");
         assert_eq!(manifest.plugin.protocol_version, "1.0");
         assert_eq!(manifest.plugin.executable, "clarion-plugin-python");
@@ -463,6 +482,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -499,6 +519,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "clarion-plugin-python"
+plugin_id = "python"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "clarion-plugin-python"
@@ -524,6 +545,113 @@ max_version = "1.0.0"
         let manifest = parse_manifest(toml.as_bytes()).unwrap();
         // The integrations table is present; the core does not interpret it.
         assert!(manifest.integrations.contains_key("wardline"));
+    }
+
+    // ── Positive: plugin_id can differ from name ──────────────────────────────
+
+    #[test]
+    fn positive_plugin_id_can_differ_from_name() {
+        // Verifies that [plugin].name (hyphens OK) and plugin_id (kind grammar)
+        // are independently valid. This is the exact case that caused the
+        // wp2/wp3 contradiction: name = "clarion-plugin-python" (hyphens) while
+        // the entity_id needed the segment "python".
+        let toml = r#"
+[plugin]
+name = "clarion-plugin-python"
+plugin_id = "python"
+version = "0.1.0"
+protocol_version = "1.0"
+executable = "clarion-plugin-python"
+language = "python"
+extensions = ["py"]
+
+[capabilities.runtime]
+expected_max_rss_mb = 512
+expected_entities_per_file = 5000
+wardline_aware = true
+reads_outside_project_root = false
+
+[ontology]
+entity_kinds = ["function"]
+edge_kinds = []
+rule_id_prefix = "CLA-PY-"
+ontology_version = "0.1.0"
+"#;
+        let manifest = parse_manifest(toml.as_bytes()).unwrap();
+        assert_eq!(manifest.plugin.name, "clarion-plugin-python");
+        assert_eq!(manifest.plugin.plugin_id, "python");
+    }
+
+    // ── Negative: missing plugin_id ───────────────────────────────────────────
+
+    #[test]
+    fn negative_missing_plugin_id_returns_malformed() {
+        // A manifest without [plugin].plugin_id must fail deserialization because
+        // plugin_id is a required field (no serde default).
+        let toml = r#"
+[plugin]
+name = "my-plugin"
+version = "0.1.0"
+protocol_version = "1.0"
+executable = "my-plugin"
+language = "mylang"
+extensions = ["my"]
+
+[capabilities.runtime]
+expected_max_rss_mb = 256
+expected_entities_per_file = 100
+wardline_aware = false
+reads_outside_project_root = false
+
+[ontology]
+entity_kinds = ["widget"]
+edge_kinds = []
+rule_id_prefix = "CLA-MY-"
+ontology_version = "0.1.0"
+"#;
+        let err = parse_manifest(toml.as_bytes()).unwrap_err();
+        assert_eq!(err.subcode(), "CLA-INFRA-MANIFEST-MALFORMED");
+        assert!(matches!(err, ManifestError::Malformed { .. }));
+    }
+
+    // ── Negative: plugin_id with hyphen rejected ──────────────────────────────
+
+    #[test]
+    fn negative_plugin_id_with_hyphen_rejected_as_malformed() {
+        // "my-plugin" contains a hyphen; the ADR-022 kind grammar [a-z][a-z0-9_]*
+        // forbids it. This is the exact contradiction that motivated separating
+        // plugin_id from name.
+        let toml = r#"
+[plugin]
+name = "my-plugin"
+plugin_id = "my-plugin"
+version = "0.1.0"
+protocol_version = "1.0"
+executable = "my-plugin"
+language = "mylang"
+extensions = ["my"]
+
+[capabilities.runtime]
+expected_max_rss_mb = 256
+expected_entities_per_file = 100
+wardline_aware = false
+reads_outside_project_root = false
+
+[ontology]
+entity_kinds = ["widget"]
+edge_kinds = []
+rule_id_prefix = "CLA-MY-"
+ontology_version = "0.1.0"
+"#;
+        let err = parse_manifest(toml.as_bytes()).unwrap_err();
+        assert_eq!(err.subcode(), "CLA-INFRA-MANIFEST-MALFORMED");
+        assert!(matches!(
+            err,
+            ManifestError::GrammarViolation {
+                field: "plugin_id",
+                ref value,
+            } if value == "my-plugin"
+        ));
     }
 
     // ── Negative: missing [plugin].name ──────────────────────────────────────
@@ -562,6 +690,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -594,6 +723,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -626,6 +756,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -657,6 +788,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -688,6 +820,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -722,6 +855,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -754,6 +888,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -786,6 +921,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -819,6 +955,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -850,6 +987,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -881,6 +1019,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -914,6 +1053,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -945,6 +1085,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -979,6 +1120,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -1059,6 +1201,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -1094,6 +1237,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -1129,6 +1273,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
@@ -1164,6 +1309,7 @@ ontology_version = "0.1.0"
         let toml = r#"
 [plugin]
 name = "my-plugin"
+plugin_id = "myplugin"
 version = "0.1.0"
 protocol_version = "1.0"
 executable = "my-plugin"
