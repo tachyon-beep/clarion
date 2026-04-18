@@ -6,6 +6,8 @@
 //!   - `transport` — Task 2: LSP-style Content-Length framing (L4).
 
 pub mod manifest;
+#[cfg(test)]
+pub(crate) mod mock;
 pub mod protocol;
 pub mod transport;
 
