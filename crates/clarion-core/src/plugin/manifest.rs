@@ -288,6 +288,21 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
             message: "[plugin].extensions must not be empty".to_owned(),
         });
     }
+    // Extension format: lowercase ASCII alphanumeric, no dot, at least 1 char.
+    // Grammar: [a-z][a-z0-9]*  (matches what Path::extension() returns — no leading dot).
+    for ext in &manifest.plugin.extensions {
+        if ext.is_empty()
+            || !ext.starts_with(|c: char| c.is_ascii_lowercase())
+            || !ext
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        {
+            return Err(ManifestError::GrammarViolation {
+                field: "extensions",
+                value: ext.clone(),
+            });
+        }
+    }
 
     // 3. entity_kinds non-empty; grammar; reserved check.
     if manifest.ontology.entity_kinds.is_empty() {
@@ -1330,5 +1345,69 @@ ontology_version = "0.1.0"
 "#;
         let manifest = parse_manifest(toml.as_bytes()).unwrap();
         assert_eq!(manifest.ontology.rule_id_prefix, "CLA-FOO-BAR-");
+    }
+
+    // ── Extension format grammar (ticket clarion-fa35cad487) ─────────────────
+
+    fn ext_manifest(extensions_toml: &str) -> String {
+        format!(
+            r#"[plugin]
+name = "my-plugin"
+plugin_id = "myplugin"
+version = "0.1.0"
+protocol_version = "1.0"
+executable = "my-plugin"
+language = "mylang"
+extensions = {extensions_toml}
+
+[capabilities.runtime]
+expected_max_rss_mb = 256
+expected_entities_per_file = 100
+wardline_aware = false
+reads_outside_project_root = false
+
+[ontology]
+entity_kinds = ["widget"]
+edge_kinds = []
+rule_id_prefix = "CLA-MY-"
+ontology_version = "0.1.0"
+"#
+        )
+    }
+
+    #[test]
+    fn positive_extension_lowercase_alphanumeric_accepted() {
+        let manifest = parse_manifest(ext_manifest(r#"["py"]"#).as_bytes()).unwrap();
+        assert_eq!(manifest.plugin.extensions, vec!["py"]);
+    }
+
+    #[test]
+    fn negative_extension_uppercase_rejected() {
+        let err = parse_manifest(ext_manifest(r#"["PY"]"#).as_bytes()).unwrap_err();
+        assert_eq!(err.subcode(), "CLA-INFRA-MANIFEST-MALFORMED");
+        assert!(matches!(
+            err,
+            ManifestError::GrammarViolation { field: "extensions", value } if value == "PY"
+        ));
+    }
+
+    #[test]
+    fn negative_extension_with_dot_rejected() {
+        let err = parse_manifest(ext_manifest(r#"[".py"]"#).as_bytes()).unwrap_err();
+        assert_eq!(err.subcode(), "CLA-INFRA-MANIFEST-MALFORMED");
+        assert!(matches!(
+            err,
+            ManifestError::GrammarViolation { field: "extensions", value } if value == ".py"
+        ));
+    }
+
+    #[test]
+    fn negative_extension_empty_string_rejected() {
+        let err = parse_manifest(ext_manifest(r#"[""]"#).as_bytes()).unwrap_err();
+        assert_eq!(err.subcode(), "CLA-INFRA-MANIFEST-MALFORMED");
+        assert!(matches!(
+            err,
+            ManifestError::GrammarViolation { field: "extensions", value } if value.is_empty()
+        ));
     }
 }
