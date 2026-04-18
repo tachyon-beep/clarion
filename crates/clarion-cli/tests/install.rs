@@ -112,3 +112,23 @@ fn install_force_returns_unimplemented_in_sprint_one() {
         "expected Sprint 1 --force stub message: {stderr}"
     );
 }
+
+#[test]
+fn install_leaves_existing_clarion_yaml_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let yaml_path = dir.path().join("clarion.yaml");
+    let user_content = "# user-edited clarion.yaml\nversion: 1\ncustom_key: preserved\n";
+    fs::write(&yaml_path, user_content).unwrap();
+
+    clarion_bin()
+        .args(["install", "--path"])
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    let after = fs::read_to_string(&yaml_path).unwrap();
+    assert_eq!(
+        after, user_content,
+        "clarion.yaml was overwritten; user content lost"
+    );
+}

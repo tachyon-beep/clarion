@@ -71,6 +71,12 @@ pub fn run(path: &Path, force: bool) -> Result<()> {
         );
     }
 
+    if !path.exists() {
+        bail!(
+            "target directory does not exist: {}. Create it first or pass a valid --path.",
+            path.display()
+        );
+    }
     let project_root = path
         .canonicalize()
         .with_context(|| format!("cannot canonicalise --path {}", path.display()))?;
@@ -97,7 +103,12 @@ pub fn run(path: &Path, force: bool) -> Result<()> {
         .with_context(|| format!("write {}", gitignore_path.display()))?;
 
     let yaml_path = project_root.join("clarion.yaml");
-    if !yaml_path.exists() {
+    if yaml_path.exists() {
+        tracing::debug!(
+            path = %yaml_path.display(),
+            "clarion.yaml already exists; leaving untouched"
+        );
+    } else {
         fs::write(&yaml_path, CLARION_YAML_STUB)
             .with_context(|| format!("write {}", yaml_path.display()))?;
     }
@@ -111,7 +122,8 @@ pub fn run(path: &Path, force: bool) -> Result<()> {
 }
 
 fn initialise_db(path: &Path) -> Result<()> {
-    let mut conn = Connection::open(path)?;
+    let mut conn =
+        Connection::open(path).with_context(|| format!("open database {}", path.display()))?;
     pragma::apply_write_pragmas(&conn).map_err(|e| anyhow::anyhow!("{e}"))?;
     schema::apply_migrations(&mut conn).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())
