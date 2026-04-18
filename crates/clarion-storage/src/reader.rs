@@ -27,9 +27,12 @@ impl ReaderPool {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::StorageError::PoolBuild`] if `deadpool-sqlite` cannot create
-    /// the pool (typically because the path is not a valid `SQLite` file or
-    /// the filesystem denies access).
+    /// Returns [`crate::StorageError::PoolBuild`] if `deadpool-sqlite`
+    /// cannot build the pool — typically because `max_size` is zero or
+    /// the runtime is not configured. The `SQLite` file itself is NOT
+    /// validated here; connections open lazily on the first
+    /// [`Self::with_reader`] call, and file-level errors (path missing,
+    /// permission denied) surface there instead.
     pub fn open(db_path: impl AsRef<Path>, max_size: usize) -> Result<Self> {
         let mut cfg = Config::new(db_path.as_ref());
         cfg.pool = Some(deadpool_sqlite::PoolConfig::new(max_size));
@@ -42,12 +45,22 @@ impl ReaderPool {
     /// Read-side PRAGMAs are applied on every acquisition — cheap and
     /// guarantees `busy_timeout` + `foreign_keys` are always on.
     ///
+    /// The closure must be `'static`: captures must be owned or cloned
+    /// into the closure (borrowed references from the caller's scope
+    /// will not compile). This is a consequence of `deadpool_sqlite`'s
+    /// `interact()` submitting the closure to a blocking task pool.
+    ///
     /// # Errors
     ///
-    /// Returns [`crate::StorageError::Pool`] if the pool cannot acquire a
-    /// connection, [`crate::StorageError::PoolInteract`] if the interact task
-    /// panics or is aborted, or whatever the closure returns if the
-    /// query itself fails.
+    /// Returns one of:
+    ///
+    /// - [`crate::StorageError::Pool`] if the pool cannot acquire a
+    ///   connection (most commonly: pool exhausted, acquire timeout).
+    /// - [`crate::StorageError::PoolInteract`] if the closure panics or
+    ///   the interact task is aborted. The pool recycles poisoned
+    ///   connections automatically; subsequent calls remain usable.
+    /// - Whatever the closure itself returns on query failure (typically
+    ///   [`crate::StorageError::Sqlite`]).
     pub async fn with_reader<F, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(&rusqlite::Connection) -> Result<T> + Send + 'static,
