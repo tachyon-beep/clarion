@@ -1,9 +1,26 @@
-//! clarion — command-line entry point.
-//!
-//! Real subcommand implementations land in Tasks 5 and 7. This Task-1
-//! stub exists so the workspace compiles pedantic-clean from day one.
+mod cli;
+mod install;
 
-fn main() -> anyhow::Result<()> {
-    eprintln!("clarion: unimplemented (Sprint 1 WP1 scaffold — Task 1)");
-    std::process::exit(2);
+use anyhow::Result;
+use clap::Parser;
+
+fn main() -> Result<()> {
+    init_tracing();
+    let cli = cli::Cli::parse();
+    match cli.command {
+        cli::Command::Install { force, path } => install::run(&path, force),
+        cli::Command::Analyze { path: _ } => {
+            // Task 7 implements this. Stubbed so `clarion analyze` is reachable.
+            anyhow::bail!("clarion analyze — unimplemented (landing in Task 7)");
+        }
+    }
+}
+
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
 }
