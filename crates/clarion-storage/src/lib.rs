@@ -6,6 +6,8 @@
 
 pub mod error;
 pub mod pragma;
+pub mod reader;
 pub mod schema;
 
 pub use error::{Result, StorageError};
+pub use reader::ReaderPool;

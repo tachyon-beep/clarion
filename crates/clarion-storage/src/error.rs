@@ -10,6 +10,12 @@ pub enum StorageError {
     #[error("connection-pool error: {0}")]
     Pool(#[from] deadpool_sqlite::PoolError),
 
+    #[error("pool build error: {0}")]
+    PoolBuild(#[from] deadpool_sqlite::CreatePoolError),
+
+    #[error("pool interact error: {0}")]
+    PoolInteract(#[from] deadpool_sqlite::InteractError),
+
     #[error("PRAGMA invariant violated: {0}")]
     PragmaInvariant(String),
 
