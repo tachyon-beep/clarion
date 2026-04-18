@@ -409,7 +409,7 @@ Steps:
 
 Steps:
 
-- [ ] Write `plugin.toml` matching WP2 L5 schema: `[plugin]` (name, version, protocol_version, executable, `language = "python"`, `extensions = ["py"]`), `[capabilities]` (RSS 512MB, 300s runtime, 10MB frame ceiling, 100k entity cap), `[ontology]` (kinds = `["function"]`, edge_kinds = `[]`, `rule_id_prefix = "CLA-PY-"`, `ontology_version = "0.1.0"`), `[integrations.wardline]` (`min_version = "0.1.0"`, `max_version = "0.2.0"`).
+- [ ] Write `plugin.toml` matching WP2 L5 schema: `[plugin]` (name, version, protocol_version, executable, `language = "python"`, `extensions = ["py"]`), `[capabilities.runtime]` per ADR-021 §Layer 1 (`expected_max_rss_mb = 512`, `expected_entities_per_file = 5000`, `wardline_aware = true`, `reads_outside_project_root = false`), `[ontology]` (kinds = `["function"]`, edge_kinds = `[]`, `rule_id_prefix = "CLA-PY-"`, `ontology_version = "0.1.0"`), `[integrations.wardline]` (`min_version = "0.1.0"`, `max_version = "0.2.0"`). The Wardline-specific values in `[integrations.wardline]` flow from the `wardline_aware = true` declaration.
 - [ ] Arrange installation to place `plugin.toml` where WP2's discovery (L9) finds it: at install-prefix `share/clarion/plugins/clarion-plugin-python/plugin.toml`. Using `tool.setuptools` or `hatch` data-file declarations in `pyproject.toml`. Verify after `pip install -e .` the file is discoverable.
 - [ ] Modify `analyze_file` handler: read the requested path, run `extractor.extract()`, return `{"entities": [...]}`.
 - [ ] Commit: `feat(wp3): plugin.toml manifest + analyze_file wired to extractor`.

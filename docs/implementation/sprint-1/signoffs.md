@@ -50,6 +50,9 @@ locked design requires a follow-up ADR and cross-WP impact analysis.
 - [ ] **A.2.7** — Crash-loop breaker trips after the configured number of crashes in the configured window. Proof: test with `MockPlugin::new_crashing`.
 - [ ] **A.2.8** — `clarion analyze` with the fixture mock plugin produces ≥1 persisted entity. Proof: `wp2_e2e` integration test.
 - [ ] **A.2.9** — Every UQ-WP2-* marked resolved in [`wp2-plugin-host.md §5`](./wp2-plugin-host.md#5-unresolved-questions). Proof: doc commit.
+- [ ] **A.2.10** — Manifest with malformed identifier grammar (entity kind violating `[a-z][a-z0-9_]*` or `rule_id_prefix` violating `CLA-[A-Z]+(-[A-Z0-9]+)+`) is rejected at parse with `CLA-INFRA-MANIFEST-MALFORMED` per ADR-022. Includes the reserved-prefix rejections (`rule_id_prefix = "CLA-INFRA-"` and `"CLA-FACT-"` → `CLA-INFRA-RULE-ID-NAMESPACE`). Proof: negative tests in `clarion-core::plugin::manifest`.
+- [ ] **A.2.11** — Manifest declaring a core-reserved entity kind (`file`, `subsystem`, or `guidance`) in `entity_kinds` is rejected at parse with `CLA-INFRA-MANIFEST-RESERVED-KIND` per ADR-022 §Core owns. Proof: negative test in `clarion-core::plugin::manifest`.
+- [ ] **A.2.12** — Manifest declaring `capabilities.runtime.reads_outside_project_root = true` is refused at `initialize` with `CLA-INFRA-MANIFEST-UNSUPPORTED-CAPABILITY` per ADR-021 §Layer 1; the plugin process is terminated before any `analyze_file` dispatch. Proof: host integration test in `clarion-core::plugin::host`.
 
 ### A.3 Python plugin (WP3)
 
