@@ -32,6 +32,9 @@ pub enum StorageError {
     #[error("channel closed — writer actor has exited")]
     WriterGone,
 
+    #[error("writer protocol violation: {0}")]
+    WriterProtocol(String),
+
     #[error("writer actor returned no response")]
     WriterNoResponse,
 }

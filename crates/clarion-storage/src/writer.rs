@@ -31,6 +31,14 @@ pub const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 
 pub struct Writer {
     tx: mpsc::Sender<WriterCmd>,
+    /// Count of every `COMMIT` statement issued by the actor.
+    ///
+    /// Includes both per-batch boundary commits (every `batch_size` inserts)
+    /// and the final commit issued by `CommitRun`. Intended for test
+    /// assertions and diagnostic counters; not a measure of completed runs.
+    ///
+    /// Read this field before dropping the [`Writer`]: the actor holds its
+    /// own `Arc` clone that lives until the `JoinHandle` resolves.
     pub commits_observed: Arc<AtomicUsize>,
 }
 
@@ -74,6 +82,11 @@ impl Writer {
 
     /// Convenience: send a command and await its ack.
     ///
+    /// Intended for use by `clarion analyze` (Task 7) and later WP
+    /// consumers; Sprint 1 integration tests use a local test helper
+    /// rather than this method. Kept as part of the L3 lock-in surface
+    /// so callers have a stable entry point when they arrive.
+    ///
     /// # Errors
     ///
     /// Returns [`StorageError::WriterGone`] if the actor has exited and the
@@ -99,7 +112,7 @@ fn run_actor(
     mut rx: mpsc::Receiver<WriterCmd>,
     conn: &mut Connection,
     batch_size: usize,
-    commits_observed: &Arc<AtomicUsize>,
+    commits_observed: &AtomicUsize,
 ) {
     let mut state = ActorState::new(batch_size);
 
@@ -191,7 +204,9 @@ fn begin_run(
     started_at: &str,
 ) -> Result<()> {
     if state.current_run.is_some() {
-        return Err(StorageError::Sqlite(rusqlite::Error::InvalidQuery));
+        return Err(StorageError::WriterProtocol(
+            "BeginRun received while a run is already in progress".to_owned(),
+        ));
     }
     conn.execute(
         "INSERT INTO runs (id, started_at, completed_at, config, stats, status) \
@@ -209,8 +224,13 @@ fn insert_entity(
     conn: &mut Connection,
     state: &mut ActorState,
     entity: &EntityRecord,
-    commits_observed: &Arc<AtomicUsize>,
+    commits_observed: &AtomicUsize,
 ) -> Result<()> {
+    if state.current_run.is_none() {
+        return Err(StorageError::WriterProtocol(
+            "InsertEntity received without a preceding BeginRun".to_owned(),
+        ));
+    }
     if !state.in_tx {
         conn.execute_batch("BEGIN")?;
         state.in_tx = true;
@@ -257,10 +277,13 @@ fn insert_entity(
     )?;
     state.inserts_in_batch += 1;
     if state.inserts_in_batch >= state.batch_size {
+        // State transitions BEFORE the fallible COMMIT: SQLite aborts the
+        // transaction on COMMIT failure regardless, so setting in_tx=false
+        // first keeps our state conservatively correct if the COMMIT errors.
+        state.inserts_in_batch = 0;
+        state.in_tx = false;
         conn.execute_batch("COMMIT")?;
         commits_observed.fetch_add(1, Ordering::Relaxed);
-        state.in_tx = false;
-        state.inserts_in_batch = 0;
         // Open the next batch eagerly so the next insert doesn't pay
         // another `BEGIN` round-trip.
         conn.execute_batch("BEGIN")?;
@@ -276,12 +299,12 @@ fn commit_run(
     status: RunStatus,
     completed_at: &str,
     stats_json: &str,
-    commits_observed: &Arc<AtomicUsize>,
+    commits_observed: &AtomicUsize,
 ) -> Result<()> {
     if state.in_tx {
+        state.in_tx = false;
         conn.execute_batch("COMMIT")?;
         commits_observed.fetch_add(1, Ordering::Relaxed);
-        state.in_tx = false;
     }
     conn.execute(
         "UPDATE runs SET status = ?1, completed_at = ?2, stats = ?3 WHERE id = ?4",

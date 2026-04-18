@@ -235,3 +235,62 @@ async fn fail_run_rolls_back_pending_inserts() {
         .unwrap();
     assert_eq!(status, "failed");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn insert_entity_without_begin_run_is_protocol_violation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = prepared_db(&dir);
+    let (writer, handle) = Writer::spawn(path.clone(), 50, 256).unwrap();
+    let tx = writer.sender();
+
+    let result = send::<()>(&tx, |ack| WriterCmd::InsertEntity {
+        entity: Box::new(make_entity("python:function:demo.early")),
+        ack,
+    })
+    .await;
+
+    let err = result.expect_err("InsertEntity without BeginRun should fail");
+    assert!(
+        matches!(err, clarion_storage::StorageError::WriterProtocol(_)),
+        "expected WriterProtocol, got {err:?}"
+    );
+
+    drop(tx);
+    drop(writer);
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn double_begin_run_is_protocol_violation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = prepared_db(&dir);
+    let (writer, handle) = Writer::spawn(path.clone(), 50, 256).unwrap();
+    let tx = writer.sender();
+
+    send::<()>(&tx, |ack| WriterCmd::BeginRun {
+        run_id: "run-a".into(),
+        config_json: "{}".into(),
+        started_at: now_iso(),
+        ack,
+    })
+    .await
+    .unwrap();
+
+    let result = send::<()>(&tx, |ack| WriterCmd::BeginRun {
+        run_id: "run-b".into(),
+        config_json: "{}".into(),
+        started_at: now_iso(),
+        ack,
+    })
+    .await;
+
+    let err = result.expect_err("second BeginRun should fail");
+    assert!(
+        matches!(err, clarion_storage::StorageError::WriterProtocol(_)),
+        "expected WriterProtocol, got {err:?}"
+    );
+
+    drop(tx);
+    drop(writer);
+    handle.await.unwrap().unwrap();
+}
