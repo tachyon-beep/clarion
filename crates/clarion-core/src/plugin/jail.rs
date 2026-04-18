@@ -140,36 +140,36 @@ mod tests {
         // Create a subdir inside root so the `..`-path is resolv-able.
         let subdir = root.path().join("sub");
         std::fs::create_dir(&subdir).expect("mkdir sub");
-        // Create a file outside the root to give canonicalize something to resolve.
+        // Create a sibling TempDir outside the root. Both live under the same
+        // OS temp directory (e.g. /tmp), so we can reach `outside_file` by
+        // going `subdir/../../<outside_dir_name>/secret.py`.
         let outside_root = TempDir::new().expect("outside tmpdir");
-        let outside_file = make_file(&outside_root, "secret.py");
+        // Create the file so canonicalize can resolve it; we navigate to it by
+        // dir-name + filename rather than storing the PathBuf return value.
+        make_file(&outside_root, "secret.py");
 
-        // Build a path that starts inside `root/sub` but escapes via `../..`
-        // and then descends into the outside directory.
+        // `subdir` is `<root>/sub`. One `..` reaches `<root>`; a second `..`
+        // reaches `<root>`'s parent (the OS temp dir). From there we use only
+        // the dir-name of `outside_root` + the hardcoded filename so the path
+        // stays within the temp directory tree.
+        let outside_dir_name = outside_root
+            .path()
+            .file_name()
+            .expect("outside TempDir must have a file name");
         let escape = subdir
             .join("../..")
-            .join(outside_file.strip_prefix("/").unwrap_or(&outside_file));
+            .join(outside_dir_name)
+            .join("secret.py");
 
-        // Only attempt this test if the escape path is actually resolvable.
-        if escape.exists() {
-            let err = jail(root.path(), &escape).expect_err("must reject escape");
-            assert!(
-                matches!(err, JailError::EscapedRoot { .. }),
-                "expected EscapedRoot, got: {err:?}"
-            );
-        } else {
-            // Use a simpler dotdot escape: root/sub/../../tmp (should always exist).
-            let simple_escape = subdir.join("../../tmp");
-            if simple_escape.exists() {
-                let err = jail(root.path(), &simple_escape).expect_err("must reject escape");
-                assert!(
-                    matches!(err, JailError::EscapedRoot { .. }),
-                    "expected EscapedRoot, got: {err:?}"
-                );
-            }
-            // If neither escape path resolves, the test is vacuously satisfied
-            // (both are Io errors from canonicalize, which is also a rejection).
-        }
+        assert!(
+            escape.exists(),
+            "escape path must exist — both TempDirs should live under the same parent"
+        );
+        let err = jail(root.path(), &escape).expect_err("must reject escape");
+        assert!(
+            matches!(err, JailError::EscapedRoot { .. }),
+            "expected EscapedRoot, got: {err:?}"
+        );
     }
 
     // ── jail_03: symlink inside root pointing outside is rejected ─────────────

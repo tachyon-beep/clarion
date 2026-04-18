@@ -1,6 +1,6 @@
 //! Core-enforced resource limits for the plugin host.
 //!
-//! Implements ADR-021 §2b–§2d: ceilings and circuit-breakers that plugins
+//! Implements ADR-021 §2a–§2d: ceilings and circuit-breakers that plugins
 //! cannot opt out of. All four minimums are defined here:
 //!
 //! | ADR ref   | Minimum                  | Type                    |
@@ -106,10 +106,10 @@ impl Default for ContentLengthCeiling {
 /// ADR-021 §2c: entities, edges, and findings are all counted against the same
 /// cap; the `delta` passed to `try_admit` is the combined increment.
 #[derive(Debug, Error, PartialEq, Eq)]
-#[error("entity cap exceeded: tried to admit {observed} items, cap is {cap}")]
+#[error("entity cap exceeded: {would_reach} items would be reached (cap {cap})")]
 pub struct CapExceeded {
     /// The cumulative count that would have been reached.
-    pub observed: usize,
+    pub would_reach: usize,
     /// The configured cap.
     pub cap: usize,
 }
@@ -151,7 +151,7 @@ impl EntityCountCap {
         let next = self.consumed.saturating_add(delta);
         if next > self.max {
             return Err(CapExceeded {
-                observed: next,
+                would_reach: next,
                 cap: self.max,
             });
         }
@@ -169,6 +169,7 @@ impl EntityCountCap {
 
 /// State returned by [`PathEscapeBreaker::record_escape`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BreakerState {
     /// The breaker is within the escape threshold; the supervisor should drop
     /// the offending entity but keep the plugin alive.
@@ -185,9 +186,9 @@ pub enum BreakerState {
 ///
 /// # Clock injection
 ///
-/// The public API uses [`Instant::now()`] internally. Tests use the private
-/// [`record_escape_at`](Self::record_escape_at) helper to inject arbitrary
-/// instants without sleeping.
+/// The public API uses [`Instant::now()`] internally. Tests (and Task 6's
+/// host code) use the crate-internal `record_escape_at` helper to inject
+/// arbitrary instants without sleeping.
 pub struct PathEscapeBreaker {
     /// Rolling window length — default 60 s per ADR-021 §2a.
     window: Duration,
@@ -223,12 +224,10 @@ impl PathEscapeBreaker {
         self.record_escape_at(Instant::now())
     }
 
-    /// Record a path-escape event at an explicit instant.
-    ///
-    /// Used by tests to inject a known clock source without sleeping.
-    /// Not part of the public API contract — the leading underscore signals
-    /// "internal / test-only" without making it fully private.
-    pub fn record_escape_at(&mut self, at: Instant) -> BreakerState {
+    /// Test hook — accepts an injected `Instant` to make rolling-window pruning
+    /// deterministic under test. Also used by Task 6's host code (same crate)
+    /// when a precise timestamp is available. Not part of the public API.
+    pub(crate) fn record_escape_at(&mut self, at: Instant) -> BreakerState {
         self.events.push_back(at);
         // Prune events outside the rolling window relative to `at`.
         self.events.retain(|&t| {
@@ -282,9 +281,7 @@ pub fn apply_prlimit_as(max_rss_mib: u64) -> std::io::Result<()> {
     use nix::sys::resource::{Resource, setrlimit};
 
     let bytes = max_rss_mib.saturating_mul(1024 * 1024);
-    // `nix::Errno` implements `Into<i32>` via the `From<Errno> for i32` impl.
-    setrlimit(Resource::RLIMIT_AS, bytes, bytes)
-        .map_err(|e| std::io::Error::from_raw_os_error(e as i32))
+    setrlimit(Resource::RLIMIT_AS, bytes, bytes).map_err(std::io::Error::from)
 }
 
 /// No-op stub for non-Linux targets (UQ-WP2-06: Linux-only for Sprint 1).
@@ -377,7 +374,7 @@ mod tests {
         let mut cap = EntityCountCap::new(100);
         let err = cap.try_admit(101).expect_err("should exceed cap");
         assert_eq!(err.cap, 100);
-        assert_eq!(err.observed, 101);
+        assert_eq!(err.would_reach, 101);
         // consumed must be unchanged after a failed admit.
         assert_eq!(cap.consumed(), 0, "failed admit must not modify consumed");
     }
@@ -487,7 +484,10 @@ mod tests {
     /// On Linux: calling `apply_prlimit_as` with the default ceiling returns Ok.
     ///
     /// This sets `RLIMIT_AS` on the test process itself, which is safe — tests
-    /// run well under 2 GiB.
+    /// run well under 2 GiB. Note: this test sets **both the soft and hard**
+    /// `RLIMIT_AS` to `DEFAULT_MAX_RSS_MIB` (2 GiB) on the test binary's
+    /// process. Any subsequent test in the same binary cannot raise the limit
+    /// above 2 GiB without root privileges.
     #[cfg(target_os = "linux")]
     #[test]
     fn apply_prlimit_linux_returns_ok() {
