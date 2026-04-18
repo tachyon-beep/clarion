@@ -1,16 +1,19 @@
-//! WP2 Task 8 integration test — `clarion analyze` with live plugin.
+//! WP2 Task 9 — end-to-end smoke test.
 //!
-//! Exercises the full `clarion analyze` command against a project directory
-//! that has:
-//! - A pre-initialised `.clarion/clarion.db` (via `clarion install`).
-//! - The `clarion-plugin-fixture` binary on a synthetic `$PATH`.
-//! - A `demo.mt` source file in the project root.
+//! Proves signoff A.2.8: the full Sprint 1 walking-skeleton pipeline works.
 //!
-//! Asserts: the command exits successfully, the `runs` table has exactly one
-//! row with status `completed`, and the `entities` table has `entity_count > 0`.
+//! Scenario:
+//!   1. `clarion install` initialises `.clarion/clarion.db`.
+//!   2. A `clarion-plugin-fixture` binary is placed on a synthetic `$PATH`
+//!      alongside its `plugin.toml` (neighbour-discovery convention, L9).
+//!   3. A single source file `demo.mt` is created in the project root.
+//!   4. `clarion analyze` discovers the fixture plugin, spawns it,
+//!      handshakes, calls `analyze_file` once, receives one entity, and
+//!      persists it to the `entities` table.
 //!
-//! The fixture plugin emits one entity per `analyze_file` call
-//! (`fixture:widget:demo.sample`), so one source file yields `entity_count == 1`.
+//! Asserts the full round-trip preserves entity identity: the persisted
+//! row exactly matches the fixture plugin's declared emission
+//! (`fixture:widget:demo.sample`).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -94,7 +97,7 @@ fn setup_plugin_dir(fixture_bin: &PathBuf) -> TempDir {
 }
 
 #[test]
-fn wp2_analyze_with_fixture_plugin_produces_entities() {
+fn wp2_e2e_smoke_fixture_plugin_round_trip() {
     // 1. Locate the fixture binary.
     let fixture_bin = fixture_binary_path();
 
@@ -133,10 +136,11 @@ fn wp2_analyze_with_fixture_plugin_produces_entities() {
         .assert()
         .success();
 
-    // 8. Verify the database.
+    // 8. Verify the database — full round-trip identity assertions.
     let db_path = project_dir.path().join(".clarion/clarion.db");
     let conn = Connection::open(&db_path).expect("open db");
 
+    // Assert 1 + 2: exactly one run row with status "completed".
     let (run_count, run_status): (i64, String) = conn
         .query_row(
             "SELECT COUNT(*), COALESCE(MAX(status), '') FROM runs",
@@ -154,12 +158,51 @@ fn wp2_analyze_with_fixture_plugin_produces_entities() {
         "run status must be 'completed'; got {run_status:?}"
     );
 
+    // Assert 3: stats JSON reports entities_inserted = 1.
+    let stats_raw: String = conn
+        .query_row("SELECT stats FROM runs LIMIT 1", [], |row| row.get(0))
+        .expect("query runs.stats");
+    let stats: serde_json::Value =
+        serde_json::from_str(&stats_raw).expect("stats column must be valid JSON");
+    assert_eq!(
+        stats["entities_inserted"],
+        serde_json::Value::Number(1.into()),
+        "stats must report entities_inserted = 1; got {stats_raw:?}"
+    );
+
+    // Assert 4: exactly one entity row.
     let entity_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
-        .expect("query entities");
+        .expect("query entities count");
 
-    assert!(
-        entity_count > 0,
-        "expected at least one entity; got {entity_count}"
+    assert_eq!(
+        entity_count, 1,
+        "expected exactly one entity row; got {entity_count}"
+    );
+
+    // Asserts 5–8: the persisted row matches the fixture's declared emission.
+    let (entity_id, entity_kind, entity_plugin_id, entity_name): (String, String, String, String) =
+        conn.query_row(
+            "SELECT id, kind, plugin_id, name FROM entities LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("query entity row");
+
+    assert_eq!(
+        entity_id, "fixture:widget:demo.sample",
+        "entity id must be 'fixture:widget:demo.sample'; got {entity_id:?}"
+    );
+    assert_eq!(
+        entity_kind, "widget",
+        "entity kind must be 'widget'; got {entity_kind:?}"
+    );
+    assert_eq!(
+        entity_plugin_id, "fixture",
+        "entity plugin_id must be 'fixture'; got {entity_plugin_id:?}"
+    );
+    assert_eq!(
+        entity_name, "demo.sample",
+        "entity name must be 'demo.sample'; got {entity_name:?}"
     );
 }
