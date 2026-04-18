@@ -1,12 +1,14 @@
 //! Plugin-host facade.
 //!
 //! Submodules are added per WP2 task:
-//!   - `manifest`  — Task 1: `plugin.toml` parser + validator (L5, ADR-021/ADR-022).
-//!   - `protocol`  — Task 2: JSON-RPC 2.0 typed envelopes + param/result structs (L4).
-//!   - `transport` — Task 2: LSP-style Content-Length framing (L4).
-//!   - `jail`      — Task 4: path-jail enforcement (ADR-021 §2a).
-//!   - `limits`    — Task 4: core-enforced ceilings and circuit-breakers (ADR-021 §2b–§2d).
+//!   - `manifest`   — Task 1: `plugin.toml` parser + validator (L5, ADR-021/ADR-022).
+//!   - `protocol`   — Task 2: JSON-RPC 2.0 typed envelopes + param/result structs (L4).
+//!   - `transport`  — Task 2: LSP-style Content-Length framing (L4).
+//!   - `jail`       — Task 4: path-jail enforcement (ADR-021 §2a).
+//!   - `limits`     — Task 4: core-enforced ceilings and circuit-breakers (ADR-021 §2b–§2d).
+//!   - `discovery`  — Task 5: `$PATH` scanning for `clarion-plugin-*` executables (L9, ADR-021 §L9).
 
+pub mod discovery;
 pub mod jail;
 pub mod limits;
 pub mod manifest;
@@ -15,6 +17,7 @@ pub(crate) mod mock;
 pub mod protocol;
 pub mod transport;
 
+pub use discovery::{DiscoveredPlugin, DiscoveryError, discover, discover_on_path};
 pub use jail::{JailError, jail, jail_to_string};
 pub use limits::{
     BreakerState, CapExceeded, ContentLengthCeiling, DEFAULT_MAX_RSS_MIB, EntityCountCap,
