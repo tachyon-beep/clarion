@@ -120,6 +120,29 @@ pub enum MockBehaviour {
     /// `read_frame` with `max_bytes < MOCK_OVERSIZE_BYTES` returns
     /// [`TransportError::FrameTooLarge`] without reading the body.
     Oversize,
+
+    /// Responds to `analyze_file` with one entity whose `kind` is `"unknown"`,
+    /// which is not declared in the mock's manifest `entity_kinds`.
+    ///
+    /// Used by T3 to verify the host drops undeclared-kind entities.
+    UndeclaredKind,
+
+    /// Responds to `analyze_file` with one entity whose `id` field is
+    /// `"mock:function:stub"` but whose `kind` is `"function"` and
+    /// `qualified_name` is `"deliberately.wrong"` — so the expected id would
+    /// be `"mock:function:deliberately.wrong"` while the returned id says
+    /// `"mock:function:stub"`.
+    ///
+    /// Used by T4 to verify the host drops identity-mismatched entities.
+    IdMismatch,
+
+    /// Responds to `analyze_file` with `escape_count` entities each having a
+    /// `source.file_path` of `"/tmp/escape_root_MOCK"` — a path that will
+    /// canonicalise outside any `TempDir`-based project root.
+    ///
+    /// Single escape count (1) → T5 (drop-not-kill).
+    /// Eleven or more → T6 (breaker trip).
+    EscapingPath(usize),
 }
 
 // ── Mock plugin ───────────────────────────────────────────────────────────────
@@ -158,6 +181,31 @@ impl MockPlugin {
     /// Creates a mock that responds to `initialize` with an oversized frame.
     pub fn new_oversize() -> Self {
         Self::new(MockBehaviour::Oversize)
+    }
+
+    /// Creates a mock that responds to `analyze_file` with an entity whose
+    /// `kind` is `"unknown"` — not in the manifest's `entity_kinds`.
+    ///
+    /// Used by T3 (ontology-boundary enforcement).
+    pub fn new_undeclared_kind() -> Self {
+        Self::new(MockBehaviour::UndeclaredKind)
+    }
+
+    /// Creates a mock that responds to `analyze_file` with an entity whose
+    /// `id` field does not match `entity_id(plugin_id, kind, qualified_name)`.
+    ///
+    /// Used by T4 (identity-mismatch check).
+    pub fn new_id_mismatch() -> Self {
+        Self::new(MockBehaviour::IdMismatch)
+    }
+
+    /// Creates a mock that responds to `analyze_file` with `escape_count`
+    /// entities each having a `source.file_path` that canonicalises outside
+    /// the project root.
+    ///
+    /// Used by T5 (1 escape → drop-not-kill) and T6 (11 escapes → breaker trip).
+    pub fn new_escaping_path(escape_count: usize) -> Self {
+        Self::new(MockBehaviour::EscapingPath(escape_count))
     }
 
     fn new(behaviour: MockBehaviour) -> Self {
@@ -381,9 +429,57 @@ impl MockPlugin {
                 self.state
             )));
         }
-        let result = AnalyzeFileResult {
-            entities: vec![serde_json::json!({ "id": "mock:function:stub", "kind": "function" })],
+        let entities = match &self.behaviour {
+            MockBehaviour::UndeclaredKind => {
+                // Entity with kind "unknown" — not in any compliant manifest's
+                // entity_kinds list. Used by T3.
+                vec![serde_json::json!({
+                    "id": "mock:unknown:stub",
+                    "kind": "unknown",
+                    "qualified_name": "stub",
+                    "source": { "file_path": "/tmp/mock_source.mock" }
+                })]
+            }
+            MockBehaviour::IdMismatch => {
+                // Entity with kind="function" and qualified_name="deliberately.wrong"
+                // but id says "mock:function:stub" — mismatch. Used by T4.
+                vec![serde_json::json!({
+                    "id": "mock:function:stub",
+                    "kind": "function",
+                    "qualified_name": "deliberately.wrong",
+                    "source": { "file_path": "/tmp/mock_source.mock" }
+                })]
+            }
+            MockBehaviour::EscapingPath(escape_count) => {
+                // `escape_count` entities each with a source.file_path pointing
+                // outside any TempDir project root. The path must actually exist
+                // on the filesystem for jail's canonicalize to resolve it (and
+                // then find it outside the root). We use "/tmp" which exists on
+                // all Linux systems. Each entity has a unique qualified_name so
+                // identity checks pass; the id is constructed correctly.
+                //
+                // For the identity check to pass (so we get to the jail check),
+                // the entity's id must equal entity_id("mock", "function", name).
+                let count = *escape_count;
+                (0..count)
+                    .map(|i| {
+                        let qname = format!("escape.entity{i}");
+                        let eid = format!("mock:function:{qname}");
+                        serde_json::json!({
+                            "id": eid,
+                            "kind": "function",
+                            "qualified_name": qname,
+                            "source": { "file_path": "/tmp" }
+                        })
+                    })
+                    .collect()
+            }
+            _ => {
+                // Compliant / Crashing / Oversize — original behaviour.
+                vec![serde_json::json!({ "id": "mock:function:stub", "kind": "function" })]
+            }
         };
+        let result = AnalyzeFileResult { entities };
         let env = ResponseEnvelope {
             jsonrpc: JsonRpcVersion,
             id,

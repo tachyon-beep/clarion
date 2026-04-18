@@ -1,7 +1,10 @@
 //! clarion-core — domain types, identifiers, and provider traits.
 //!
-//! This crate is dependency-light and contains no I/O. Storage and CLI
-//! crates depend on it; it depends on neither.
+//! # Re-export policy (ticket clarion-29acbcd042)
+//!
+//! Only facade types that external callers need are re-exported at the crate
+//! root. Implementation types (`Frame`, `TransportError`, `RequestEnvelope`, etc.)
+//! remain accessible via `clarion_core::plugin::transport::*` and siblings.
 
 pub mod entity_id;
 pub mod llm_provider;
@@ -10,30 +13,20 @@ pub mod plugin;
 pub use entity_id::{EntityId, EntityIdError, entity_id};
 pub use llm_provider::{LlmProvider, NoopProvider};
 pub use plugin::{
-    // protocol (Task 2)
-    AnalyzeFileParams,
-    AnalyzeFileResult,
-    ExitNotification,
-    // transport (Task 2)
-    Frame,
-    InitializeParams,
-    InitializeResult,
-    InitializedNotification,
-    JsonRpcVersion,
-    // manifest (Task 1)
+    // host (Task 6) — facade for callers that spawn/connect plugins
+    AcceptedEntity,
+    CapExceeded,
+    // discovery (Task 5) — callers enumerate plugins
+    DiscoveredPlugin,
+    DiscoveryError,
+    HostError,
+    HostFinding,
+    // jail / limits errors — callers may want to match on these
+    JailError,
+    // manifest (Task 1) — callers parse manifests from disk
     Manifest,
     ManifestError,
-    NotificationEnvelope,
-    ProtocolError,
-    RequestEnvelope,
-    ResponseEnvelope,
-    ResponsePayload,
-    ShutdownParams,
-    ShutdownResult,
-    TransportError,
-    make_notification,
-    make_request,
+    PluginHost,
+    discover,
     parse_manifest,
-    read_frame,
-    write_frame,
 };

@@ -7,8 +7,10 @@
 //!   - `jail`       — Task 4: path-jail enforcement (ADR-021 §2a).
 //!   - `limits`     — Task 4: core-enforced ceilings and circuit-breakers (ADR-021 §2b–§2d).
 //!   - `discovery`  — Task 5: `$PATH` scanning for `clarion-plugin-*` executables (L9, ADR-021 §L9).
+//!   - `host`       — Task 6: plugin-host supervisor (ADR-021 §Layer 2, ADR-022, UQ-WP2-11).
 
 pub mod discovery;
+pub mod host;
 pub mod jail;
 pub mod limits;
 pub mod manifest;
@@ -18,6 +20,7 @@ pub mod protocol;
 pub mod transport;
 
 pub use discovery::{DiscoveredPlugin, DiscoveryError, discover, discover_on_path};
+pub use host::{AcceptedEntity, HostError, HostFinding, PluginHost};
 pub use jail::{JailError, jail, jail_to_string};
 pub use limits::{
     BreakerState, CapExceeded, ContentLengthCeiling, DEFAULT_MAX_RSS_MIB, EntityCountCap,

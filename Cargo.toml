@@ -4,6 +4,7 @@ members = [
     "crates/clarion-core",
     "crates/clarion-storage",
     "crates/clarion-cli",
+    "crates/clarion-plugin-fixture",
 ]
 
 [workspace.package]
@@ -14,7 +15,11 @@ repository = "https://github.com/qacona/clarion"
 rust-version = "1.85"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# Changed from "forbid" to "deny" to allow the single documented unsafe use:
+# `CommandExt::pre_exec` in plugin/host.rs calls `apply_prlimit_as` (which
+# calls `setrlimit(2)`, POSIX async-signal-safe) in the forked child.
+# All unsafe blocks must carry a SAFETY comment justifying the usage.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
