@@ -246,25 +246,25 @@ if they don't block tasks. Each has a proposed resolution-by trigger.
   awaits each insert) or per-batch ack (caller gets confirmation when its batch
   commits)? Per-command is simpler; per-batch is more efficient under high entity
   volume. **Proposal**: per-command ack in Sprint 1; optimise later if WP3 or WP4
-  hit throughput issues. **Resolution by**: Task 6.
+  hit throughput issues. **Resolved**: Task 6 — per-command oneshot ack; `Writer.commits_observed` `Arc<AtomicUsize>` counts COMMITs issued.
 - **UQ-WP1-04** — **What `.gitignore` rules does `clarion install` seed?** ADR-005
   is backlog; Sprint 1 must decide. **Proposal** (authors ADR-005 as a side effect):
   ignore `.clarion/tmp/`, `.clarion/logs/`, `.clarion/*.shadow.db`, `.clarion/*.wal`,
   `.clarion/*.shm`; track `.clarion/clarion.db`, `.clarion/config.json`, and the
   migration history in the DB itself. (`clarion.yaml` lives at project root and
   is outside `.clarion/`; its tracking is governed by the user's existing
-  repo-root `.gitignore`, not by Clarion.) **Resolution by**: Task 5.
+  repo-root `.gitignore`, not by Clarion.) **Resolved**: Task 5 — ADR-005 authored and Accepted; `.gitignore` contents shipped in `crates/clarion-cli/src/install.rs`.
 - **UQ-WP1-05** — **Schema for `runs` table**: does Sprint 1's `runs` row include
   plugin-invocation metadata (plugin name, manifest version) or only run-level
   status/timestamps? WP2 will add plugin-invocation metadata; if the schema is
   locked now, we either over-specify (columns WP1 doesn't populate) or plan a
   migration. **Proposal**: lock the full shape from detailed-design §3 now,
   including plugin-invocation columns; WP1 inserts with NULL, WP2 fills them in.
-  **Resolution by**: Task 3.
+  **Resolved**: Task 3 — full `runs` shape shipped in `0001_initial_schema.sql`; plugin-invocation metadata goes into the `config` JSON column, populated by WP2.
 - **UQ-WP1-06** — **Error-type boundary**: does `clarion-storage` re-export
   `rusqlite::Error`, or wrap it in a crate-local `StorageError` via `thiserror`?
   Re-export leaks the dependency; wrapping adds boilerplate. **Proposal**: wrap;
-  the crate boundary is a decoupling point. **Resolution by**: Task 3.
+  the crate boundary is a decoupling point. **Resolved**: Task 3 — `StorageError` wraps `rusqlite::Error` via `thiserror` `#[from]` at the `clarion-storage` crate boundary.
 - **UQ-WP1-07** — **Segment-separator collisions**: ADR-003's 3-segment form
   uses `:` as the segment separator. A segment (any of `plugin_id`, `kind`,
   `canonical_qualified_name`) containing a literal `:` would produce an
@@ -274,11 +274,10 @@ if they don't block tasks. Each has a proposed resolution-by trigger.
   Sprint 1 asserts-unreachable on any segment containing `:`; the assertion
   documents the grammar contract. If a future non-Python plugin needs `:` in
   qualified names, introduce escaping via a follow-up ADR amending ADR-003.
-  **Resolution by**: Task 2.
+  **Resolved**: Task 2 — `EntityIdError::SegmentContainsColon` surfaces any attempted `:` injection; grammar-restricted segments (`plugin_id`, `kind`) cannot produce it in practice.
 - **UQ-WP1-08** — **Does `clarion install` refuse to overwrite an existing
   `.clarion/`?** **Proposal**: yes, unless `--force`; `--force` is not implemented
-  in Sprint 1 but the error message names it for future use. **Resolution by**:
-  Task 5.
+  in Sprint 1 but the error message names it for future use. **Resolved**: Task 5 — `clarion install` refuses an existing `.clarion/`; `--force` accepted by clap but errors out (Sprint 1 does not implement overwrite).
 - **UQ-WP1-09** — **Rust toolchain + workspace tooling baseline**:
   ~~"2021 edition, stable channel. MSRV floats with the latest stable at
   sprint start; fine to document and move on."~~ — **reopened 2026-04-18
