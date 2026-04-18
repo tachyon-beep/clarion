@@ -1,0 +1,197 @@
+-- ============================================================================
+-- Clarion migration 0001 — initial schema.
+--
+-- Source: docs/clarion/v0.1/detailed-design.md §3 (Storage Implementation).
+-- Sprint 1 walking skeleton writes only to `entities` and `runs`, but every
+-- table, FTS5 virtual table, trigger, generated column, and view is created
+-- here so the full shape is frozen at L1-lock time. See ADR-011 for the
+-- writer-actor + per-N-files transaction model this schema supports.
+-- ============================================================================
+
+BEGIN;
+
+-- Meta: migration tracking. Not in detailed-design §3 — it's the runner's own
+-- bookkeeping table. Applied migrations append a row here; re-runs are no-ops.
+CREATE TABLE schema_migrations (
+    version     INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    applied_at  TEXT NOT NULL
+);
+
+-- Entities
+CREATE TABLE entities (
+    id                 TEXT PRIMARY KEY,
+    plugin_id          TEXT NOT NULL,
+    kind               TEXT NOT NULL,
+    name               TEXT NOT NULL,
+    short_name         TEXT NOT NULL,
+    parent_id          TEXT REFERENCES entities(id),
+    source_file_id     TEXT REFERENCES entities(id),
+    source_byte_start  INTEGER,
+    source_byte_end    INTEGER,
+    source_line_start  INTEGER,
+    source_line_end    INTEGER,
+    properties         TEXT NOT NULL,
+    content_hash       TEXT,
+    summary            TEXT,
+    wardline           TEXT,
+    first_seen_commit  TEXT,
+    last_seen_commit   TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+);
+CREATE INDEX ix_entities_last_seen_commit ON entities(last_seen_commit);
+CREATE INDEX ix_entities_kind              ON entities(kind);
+CREATE INDEX ix_entities_plugin_kind       ON entities(plugin_id, kind);
+CREATE INDEX ix_entities_parent            ON entities(parent_id);
+CREATE INDEX ix_entities_source_file       ON entities(source_file_id);
+CREATE INDEX ix_entities_content_hash      ON entities(content_hash);
+
+-- Tags (denormalised)
+CREATE TABLE entity_tags (
+    entity_id  TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    tag        TEXT NOT NULL,
+    PRIMARY KEY (entity_id, tag)
+);
+CREATE INDEX ix_entity_tags_tag ON entity_tags(tag);
+
+-- Edges. Deduped by (kind, from_id, to_id); see detailed-design.md §3 note.
+CREATE TABLE edges (
+    id                 TEXT PRIMARY KEY,
+    kind               TEXT NOT NULL,
+    from_id            TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    to_id              TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    properties         TEXT,
+    source_file_id     TEXT REFERENCES entities(id),
+    source_byte_start  INTEGER,
+    source_byte_end    INTEGER,
+    UNIQUE (kind, from_id, to_id)
+);
+CREATE INDEX ix_edges_from_kind ON edges(from_id, kind);
+CREATE INDEX ix_edges_to_kind   ON edges(to_id,   kind);
+CREATE INDEX ix_edges_kind      ON edges(kind);
+
+-- Findings
+CREATE TABLE findings (
+    id                  TEXT PRIMARY KEY,
+    tool                TEXT NOT NULL,
+    tool_version        TEXT NOT NULL,
+    run_id              TEXT NOT NULL,
+    rule_id             TEXT NOT NULL,
+    kind                TEXT NOT NULL,
+    severity            TEXT NOT NULL,
+    confidence          REAL,
+    confidence_basis    TEXT,
+    entity_id           TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    related_entities    TEXT NOT NULL,
+    message             TEXT NOT NULL,
+    evidence            TEXT NOT NULL,
+    properties          TEXT NOT NULL,
+    supports            TEXT NOT NULL,
+    supported_by        TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    suppression_reason  TEXT,
+    filigree_issue_id   TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX ix_findings_entity    ON findings(entity_id);
+CREATE INDEX ix_findings_rule      ON findings(rule_id);
+CREATE INDEX ix_findings_tool_rule ON findings(tool, rule_id);
+CREATE INDEX ix_findings_run       ON findings(run_id);
+CREATE INDEX ix_findings_status    ON findings(status);
+
+-- Summary cache
+CREATE TABLE summary_cache (
+    entity_id             TEXT NOT NULL,
+    content_hash          TEXT NOT NULL,
+    prompt_template_id    TEXT NOT NULL,
+    model_tier            TEXT NOT NULL,
+    guidance_fingerprint  TEXT NOT NULL,
+    summary_json          TEXT NOT NULL,
+    cost_usd              REAL NOT NULL,
+    tokens_input          INTEGER NOT NULL,
+    tokens_output         INTEGER NOT NULL,
+    created_at            TEXT NOT NULL,
+    PRIMARY KEY (entity_id, content_hash, prompt_template_id, model_tier, guidance_fingerprint)
+);
+
+-- Runs (provenance). Sprint 1 writes started_at/completed_at/config/stats/status;
+-- WP2 will populate plugin-invocation fields inside `config` JSON (per UQ-WP1-05).
+CREATE TABLE runs (
+    id            TEXT PRIMARY KEY,
+    started_at    TEXT NOT NULL,
+    completed_at  TEXT,
+    config        TEXT NOT NULL,
+    stats         TEXT NOT NULL,
+    status        TEXT NOT NULL
+);
+
+-- FTS5 for text search
+CREATE VIRTUAL TABLE entity_fts USING fts5(
+    entity_id UNINDEXED,
+    name,
+    short_name,
+    summary_text,
+    content_text,
+    tokenize = 'porter unicode61'
+);
+
+-- FTS5 triggers keep entity_fts synchronised with entities.
+CREATE TRIGGER entities_ai AFTER INSERT ON entities BEGIN
+    INSERT INTO entity_fts (entity_id, name, short_name, summary_text, content_text)
+    VALUES (
+        new.id,
+        new.name,
+        new.short_name,
+        COALESCE(json_extract(new.summary, '$.briefing.purpose'), ''),
+        ''
+    );
+END;
+CREATE TRIGGER entities_au AFTER UPDATE ON entities BEGIN
+    UPDATE entity_fts
+    SET name         = new.name,
+        short_name   = new.short_name,
+        summary_text = COALESCE(json_extract(new.summary, '$.briefing.purpose'), '')
+    WHERE entity_id = new.id;
+END;
+CREATE TRIGGER entities_ad AFTER DELETE ON entities BEGIN
+    DELETE FROM entity_fts WHERE entity_id = old.id;
+END;
+
+-- Generated columns + partial indexes for hot JSON properties.
+ALTER TABLE entities ADD COLUMN priority TEXT
+    GENERATED ALWAYS AS (json_extract(properties, '$.priority')) VIRTUAL;
+CREATE INDEX ix_entities_priority ON entities(priority) WHERE priority IS NOT NULL;
+
+ALTER TABLE entities ADD COLUMN git_churn_count INTEGER
+    GENERATED ALWAYS AS (json_extract(properties, '$.git_churn_count')) VIRTUAL;
+CREATE INDEX ix_entities_churn ON entities(git_churn_count) WHERE git_churn_count IS NOT NULL;
+
+-- View for guidance resolver. detailed-design.md §3 references a bare `tags`
+-- column on `entities` that does not exist under the normalised tag schema;
+-- the view aggregates entity_tags via a correlated subquery to produce the
+-- same JSON-array row shape the design implies.
+CREATE VIEW guidance_sheets AS
+SELECT
+    e.id,
+    e.name,
+    json_extract(e.properties, '$.priority')             AS priority,
+    json_extract(e.properties, '$.scope.query_types')    AS query_types,
+    json_extract(e.properties, '$.scope.token_budget')   AS token_budget,
+    json_extract(e.properties, '$.match_rules')          AS match_rules,
+    json_extract(e.properties, '$.content')              AS content,
+    json_extract(e.properties, '$.expires')              AS expires,
+    (
+        SELECT json_group_array(tag)
+        FROM entity_tags
+        WHERE entity_id = e.id
+    )                                                     AS tags
+FROM entities e
+WHERE e.kind = 'guidance';
+
+-- Record the migration.
+INSERT INTO schema_migrations (version, name, applied_at)
+VALUES (1, '0001_initial_schema', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+COMMIT;
