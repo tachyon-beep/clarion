@@ -38,3 +38,4 @@ uuid = { version = "1", features = ["v4"] }
 toml = "0.8"
 assert_cmd = "2"
 tempfile = "3"
+nix = { version = "0.28", default-features = false, features = ["resource"] }

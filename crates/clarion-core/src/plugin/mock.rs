@@ -36,6 +36,7 @@ use super::{
     ResponsePayload, ShutdownResult, read_frame, write_frame,
 };
 use crate::plugin::Frame;
+use crate::plugin::limits::ContentLengthCeiling;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -219,7 +220,7 @@ impl MockPlugin {
             // Try to read one complete frame. A `TruncatedBody` or EOF error
             // means we have a partial frame — put the remaining bytes back and
             // wait for the next tick.
-            let frame = match read_frame(&mut cursor, usize::MAX) {
+            let frame = match read_frame(&mut cursor, ContentLengthCeiling::unbounded()) {
                 Ok(f) => f,
                 Err(super::TransportError::TruncatedBody { .. }) => {
                     // Partial frame: put unconsumed bytes back into inbox.
@@ -466,7 +467,8 @@ mod tests {
         mock.tick().expect("tick must succeed");
 
         // Step 5: read the response frame.
-        let frame = read_frame(mock.stdout(), 1024 * 1024).expect("read_frame must succeed");
+        let frame = read_frame(mock.stdout(), ContentLengthCeiling::new(1024 * 1024))
+            .expect("read_frame must succeed");
 
         // Step 6: deserialise as ResponseEnvelope.
         let resp: ResponseEnvelope =
@@ -514,7 +516,8 @@ mod tests {
         mock.tick().expect("tick after initialize");
 
         // Drain the initialize response frame so the cursor is ready for more.
-        read_frame(mock.stdout(), 1024 * 1024).expect("read initialize response");
+        read_frame(mock.stdout(), ContentLengthCeiling::new(1024 * 1024))
+            .expect("read initialize response");
 
         // Send initialized notification; mock transitions to Ready.
         send_notification(&mut mock, "initialized", &InitializedNotification {});
@@ -532,7 +535,8 @@ mod tests {
         mock.tick().expect("tick after analyze_file");
 
         // Read the analyze_file response.
-        let frame = read_frame(mock.stdout(), 1024 * 1024).expect("read analyze_file response");
+        let frame = read_frame(mock.stdout(), ContentLengthCeiling::new(1024 * 1024))
+            .expect("read analyze_file response");
         let resp: ResponseEnvelope =
             serde_json::from_slice(&frame.body).expect("deserialise analyze_file ResponseEnvelope");
 
@@ -570,7 +574,8 @@ mod tests {
         mock.tick().expect("tick after initialize");
 
         // Drain the initialize response.
-        let frame = read_frame(mock.stdout(), 1024 * 1024).expect("read initialize response");
+        let frame = read_frame(mock.stdout(), ContentLengthCeiling::new(1024 * 1024))
+            .expect("read initialize response");
         let resp: ResponseEnvelope = serde_json::from_slice(&frame.body).unwrap();
         assert!(matches!(resp.payload, ResponsePayload::Result(_)));
 
@@ -630,7 +635,7 @@ mod tests {
 
         // Read with a ceiling well below MOCK_OVERSIZE_BYTES.
         let ceiling = 64 * 1024; // 64 KiB
-        let err = read_frame(mock.stdout(), ceiling)
+        let err = read_frame(mock.stdout(), ContentLengthCeiling::new(ceiling))
             .expect_err("read_frame must fail with FrameTooLarge");
 
         assert!(
@@ -663,7 +668,8 @@ mod tests {
         );
         mock.tick().expect("first initialize must succeed");
         // Drain the response.
-        read_frame(mock.stdout(), 1024 * 1024).expect("read first initialize response");
+        read_frame(mock.stdout(), ContentLengthCeiling::new(1024 * 1024))
+            .expect("read first initialize response");
 
         // Second initialize — the mock is now Initialized, not Fresh.
         send_request(
@@ -738,7 +744,7 @@ mod tests {
 
         // Outbox must contain exactly one response frame (the successful first
         // initialize response). Read it to confirm.
-        let frame = read_frame(mock.stdout(), 1024 * 1024)
+        let frame = read_frame(mock.stdout(), ContentLengthCeiling::new(1024 * 1024))
             .expect("must be able to read the first initialize response from outbox");
         let resp: ResponseEnvelope =
             serde_json::from_slice(&frame.body).expect("deserialise first initialize response");
@@ -752,7 +758,7 @@ mod tests {
         );
 
         // No second frame in the outbox.
-        let no_frame = read_frame(mock.stdout(), 1024 * 1024);
+        let no_frame = read_frame(mock.stdout(), ContentLengthCeiling::new(1024 * 1024));
         assert!(
             no_frame.is_err(),
             "outbox must contain exactly one frame, but a second was readable"

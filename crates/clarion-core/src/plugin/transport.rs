@@ -16,11 +16,10 @@
 //!
 //! # Size ceiling
 //!
-//! [`read_frame`] accepts a `max_bytes: usize` parameter. If the `Content-Length`
-//! header exceeds that value, [`TransportError::FrameTooLarge`] is returned
-//! **without** consuming the body bytes from the reader — the supervisor decides
-//! what to do (typically disconnect). Task 4 will wrap this behind a
-//! `ContentLengthCeiling` newtype; for now the raw `usize` is sufficient.
+//! [`read_frame`] accepts a [`ContentLengthCeiling`] parameter (ADR-021 §2b).
+//! If the `Content-Length` header exceeds the ceiling, [`TransportError::FrameTooLarge`]
+//! is returned **without** consuming the body bytes from the reader — the
+//! supervisor decides what to do (typically disconnect).
 //!
 //! # No async
 //!
@@ -31,6 +30,8 @@
 use std::io::{BufRead, ErrorKind, Write};
 
 use thiserror::Error;
+
+use super::limits::ContentLengthCeiling;
 
 // ── Tunables ──────────────────────────────────────────────────────────────────
 
@@ -97,8 +98,8 @@ pub struct Frame {
 /// 1. Read header lines until a bare `\r\n` (blank line). Each header line is
 ///    capped at [`MAX_HEADER_LINE_BYTES`] to bound memory under malicious input.
 /// 2. Extract `Content-Length: N` (case-insensitive header name).
-/// 3. If `N > max_bytes`, return [`TransportError::FrameTooLarge`] without
-///    consuming any body bytes.
+/// 3. If `N > ceiling.get()`, return [`TransportError::FrameTooLarge`] without
+///    consuming any body bytes (ADR-021 §2b).
 /// 4. Read exactly `N` bytes into the body. Retries transparently on
 ///    `ErrorKind::Interrupted` (EINTR — e.g. SIGCHLD on a subprocess pipe).
 /// 5. Return `Frame { body }`.
@@ -108,7 +109,10 @@ pub struct Frame {
 /// # Errors
 ///
 /// See [`TransportError`] variants for the full list of failure modes.
-pub fn read_frame(reader: &mut impl BufRead, max_bytes: usize) -> Result<Frame, TransportError> {
+pub fn read_frame(
+    reader: &mut impl BufRead,
+    ceiling: ContentLengthCeiling,
+) -> Result<Frame, TransportError> {
     let mut content_length: Option<usize> = None;
 
     // ── Step 1+2: read header lines ──────────────────────────────────────────
@@ -158,8 +162,9 @@ pub fn read_frame(reader: &mut impl BufRead, max_bytes: usize) -> Result<Frame, 
         // All other headers are silently ignored.
     }
 
-    // ── Step 3: ceiling check ─────────────────────────────────────────────────
+    // ── Step 3: ceiling check (ADR-021 §2b) ──────────────────────────────────
     let length = content_length.ok_or(TransportError::MissingContentLength)?;
+    let max_bytes = ceiling.get();
     if length > max_bytes {
         // Do NOT read any body bytes.
         return Err(TransportError::FrameTooLarge {
@@ -307,7 +312,8 @@ mod tests {
 
         // Read back
         let mut cursor = Cursor::new(buf);
-        let decoded = read_frame(&mut cursor, usize::MAX).expect("read_frame must succeed");
+        let decoded = read_frame(&mut cursor, ContentLengthCeiling::unbounded())
+            .expect("read_frame must succeed");
 
         assert_eq!(decoded.body, body);
     }
@@ -324,7 +330,8 @@ mod tests {
         write_frame(&mut buf, &frame).expect("write");
 
         let mut cursor = Cursor::new(buf);
-        let decoded = read_frame(&mut cursor, max).expect("read at exact boundary must succeed");
+        let decoded = read_frame(&mut cursor, ContentLengthCeiling::new(max))
+            .expect("read at exact boundary must succeed");
         assert_eq!(decoded.body, body);
     }
 
@@ -344,7 +351,8 @@ mod tests {
         let header_len = format!("Content-Length: {}\r\n\r\n", body.len()).len();
 
         let mut cursor = Cursor::new(buf);
-        let err = read_frame(&mut cursor, max).expect_err("should fail with FrameTooLarge");
+        let err = read_frame(&mut cursor, ContentLengthCeiling::new(max))
+            .expect_err("should fail with FrameTooLarge");
 
         assert!(
             matches!(
@@ -392,8 +400,8 @@ mod tests {
         .expect("write 2");
 
         let mut cursor = Cursor::new(buf);
-        let f1 = read_frame(&mut cursor, usize::MAX).expect("read frame 1");
-        let f2 = read_frame(&mut cursor, usize::MAX).expect("read frame 2");
+        let f1 = read_frame(&mut cursor, ContentLengthCeiling::unbounded()).expect("read frame 1");
+        let f2 = read_frame(&mut cursor, ContentLengthCeiling::unbounded()).expect("read frame 2");
 
         assert_eq!(f1.body, body1, "first frame body mismatch");
         assert_eq!(f2.body, body2, "second frame body mismatch");
@@ -406,7 +414,8 @@ mod tests {
         // Headers end without Content-Length.
         let raw = b"X-Custom: stuff\r\n\r\n{\"key\":\"value\"}";
         let mut cursor = Cursor::new(raw.as_ref());
-        let err = read_frame(&mut cursor, usize::MAX).expect_err("should fail");
+        let err =
+            read_frame(&mut cursor, ContentLengthCeiling::unbounded()).expect_err("should fail");
         assert!(
             matches!(err, TransportError::MissingContentLength),
             "expected MissingContentLength, got: {err}"
@@ -419,7 +428,8 @@ mod tests {
     fn transport_06_malformed_content_length_returns_invalid_content_length() {
         let raw = b"Content-Length: abc\r\n\r\n";
         let mut cursor = Cursor::new(raw.as_ref());
-        let err = read_frame(&mut cursor, usize::MAX).expect_err("should fail");
+        let err =
+            read_frame(&mut cursor, ContentLengthCeiling::unbounded()).expect_err("should fail");
         assert!(
             matches!(
                 err,
@@ -436,7 +446,8 @@ mod tests {
         // Header says 10, body has only 5 bytes.
         let raw = b"Content-Length: 10\r\n\r\nhello";
         let mut cursor = Cursor::new(raw.as_ref());
-        let err = read_frame(&mut cursor, usize::MAX).expect_err("should fail");
+        let err =
+            read_frame(&mut cursor, ContentLengthCeiling::unbounded()).expect_err("should fail");
         assert!(
             matches!(
                 err,
@@ -488,8 +499,8 @@ mod tests {
         };
         let mut reader = BufReader::new(flaky);
 
-        let frame =
-            read_frame(&mut reader, usize::MAX).expect("EINTR must be retried, not propagated");
+        let frame = read_frame(&mut reader, ContentLengthCeiling::unbounded())
+            .expect("EINTR must be retried, not propagated");
         assert_eq!(frame.body, body);
     }
 
@@ -533,7 +544,8 @@ mod tests {
         // the malicious case) GBs of host memory before returning.
         let payload = vec![b'a'; 16 * 1024];
         let mut cursor = Cursor::new(payload);
-        let err = read_frame(&mut cursor, usize::MAX).expect_err("should fail");
+        let err =
+            read_frame(&mut cursor, ContentLengthCeiling::unbounded()).expect_err("should fail");
         assert!(
             matches!(err, TransportError::MalformedHeader { ref line } if line.contains("8192") || line.contains(&format!("{MAX_HEADER_LINE_BYTES}"))),
             "expected MalformedHeader with size hint, got: {err}"
@@ -549,7 +561,8 @@ mod tests {
         // InvalidContentLength("5   "). Must parse cleanly now.
         let raw = b"Content-Length: 5   \r\n\r\nhello";
         let mut cursor = Cursor::new(raw.as_ref());
-        let frame = read_frame(&mut cursor, usize::MAX).expect("must parse with trailing ws");
+        let frame = read_frame(&mut cursor, ContentLengthCeiling::unbounded())
+            .expect("must parse with trailing ws");
         assert_eq!(frame.body, b"hello");
     }
 }
