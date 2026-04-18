@@ -9,4 +9,31 @@ pub mod plugin;
 
 pub use entity_id::{EntityId, EntityIdError, entity_id};
 pub use llm_provider::{LlmProvider, NoopProvider};
-pub use plugin::{Manifest, ManifestError, parse_manifest};
+pub use plugin::{
+    // protocol (Task 2)
+    AnalyzeFileParams,
+    AnalyzeFileResult,
+    ExitNotification,
+    // transport (Task 2)
+    Frame,
+    InitializeParams,
+    InitializeResult,
+    InitializedNotification,
+    JsonRpcVersion,
+    // manifest (Task 1)
+    Manifest,
+    ManifestError,
+    NotificationEnvelope,
+    ProtocolError,
+    RequestEnvelope,
+    ResponseEnvelope,
+    ResponsePayload,
+    ShutdownParams,
+    ShutdownResult,
+    TransportError,
+    make_notification,
+    make_request,
+    parse_manifest,
+    read_frame,
+    write_frame,
+};
