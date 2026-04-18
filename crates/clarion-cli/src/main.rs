@@ -1,3 +1,4 @@
+mod analyze;
 mod cli;
 mod install;
 
@@ -9,9 +10,11 @@ fn main() -> Result<()> {
     let cli = cli::Cli::parse();
     match cli.command {
         cli::Command::Install { force, path } => install::run(&path, force),
-        cli::Command::Analyze { path: _ } => {
-            // Task 7 implements this. Stubbed so `clarion analyze` is reachable.
-            anyhow::bail!("clarion analyze — unimplemented (landing in Task 7)");
+        cli::Command::Analyze { path } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(analyze::run(path))
         }
     }
 }
