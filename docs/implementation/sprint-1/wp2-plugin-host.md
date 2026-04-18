@@ -232,8 +232,8 @@ New workspace dependencies introduced by WP2:
 |---|---|---|
 | TOML parsing | `toml` (serde-compatible) | Manifest parsing |
 | JSON-RPC framing | hand-rolled over `serde_json` | Keeps dependency surface small; see UQ-WP2-02 |
-| Async I/O (if adopted) | `tokio` | Only if UQ-WP1-02 flips to async |
-| prlimit syscall | `nix` or `rustix` | Linux `prlimit` wrapper |
+| Async runtime | `tokio` (locked by ADR-011; WP1 already adopted) | WP2 reuses the same runtime — no separate `if adopted` branch |
+| prlimit syscall | `nix` or `rustix` | `RLIMIT_AS` wrapper; Linux-only enforcement in Sprint 1 (see L6 §UQ-WP2-06) |
 
 **No cross-sibling Rust-side deps in Sprint 1.** Wardline integration is Python-side
 (WP3).
@@ -266,10 +266,16 @@ New workspace dependencies introduced by WP2:
   On exceed: current in-flight batch flushed, plugin killed, run enters
   partial-results state, `CLA-INFRA-PLUGIN-ENTITY-CAP` emitted.
   **Resolved**: Task 4.
-- **UQ-WP2-06** — **prlimit on non-Linux**: Sprint 1 is Linux-only, so this is a
-  no-op on other OSes. Do we `#[cfg(target_os = "linux")]` the enforcement or compile
-  an error? **Proposal**: `#[cfg]`-gate the enforcement; on non-Linux, log a warning
-  once and proceed without the limit. **Resolution by**: Task 4.
+- **UQ-WP2-06** — **prlimit on non-Linux**: ADR-021 §2d names both paths
+  (`prlimit(RLIMIT_AS)` on Linux, `setrlimit(RLIMIT_AS)` on macOS — both
+  POSIX). Sprint 1 scope is **Linux-only** per
+  [WP1 §1 "Explicitly out of scope"](./wp1-scaffold.md#1-scope-sprint-1-narrow),
+  so the macOS path described in ADR-021 is out of scope *for Sprint 1
+  implementation* even though it's in scope *for the ADR*. Do we
+  `#[cfg(target_os = "linux")]` the enforcement or compile an error?
+  **Proposal**: `#[cfg]`-gate the Linux implementation; on non-Linux, log
+  a warning once and proceed without the limit (the ADR-021 §2d macOS
+  path lands when Sprint N adds macOS support). **Resolution by**: Task 4.
 - **UQ-WP2-07** — **Shape of plugin non-entity output**: does the plugin write progress
   updates to stderr (free-form, the host just tees it to `tracing::info!`) or via JSON-RPC
   notifications (`$/progress`)? Walking skeleton doesn't need progress, but the

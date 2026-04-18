@@ -155,12 +155,13 @@ coordinated Clarion-side release**. ADR-018 already states this; WP3 makes it a
 real dependency. Same-author note: this is within-scope Wardline discipline, not
 cross-team coordination — but the constraint is real.
 
-**Sprint 1 decision deferred to UQ-WP3-03**: does WP3 actually *perform* the
-import, or stub the probe behind a `CLARION_WARDLINE_ENABLED` env var that's unset
-in Sprint 1? Fully wiring the import locks L8 completely; stubbing leaves the
-manifest's `[integrations.wardline]` fields as the lock-in and the Python code as
-deferred. Proposal: fully wire, since the probe is cheap and the lock-in is more
-honest when exercised.
+**Sprint 1 decision** (resolved — see UQ-WP3-03 in §5): fully wire the
+import. Symbol existence was verified pre-sprint
+(`wardline/src/wardline/core/registry.py:55`,
+`wardline/src/wardline/__init__.py:3`), so the probe runs against a real
+`pip install wardline` in the dev venv rather than stubbing behind a
+`CLARION_WARDLINE_ENABLED` env var. This locks L8 completely — the
+exercised lock-in is the honest one.
 
 ## 3. File decomposition
 
@@ -230,10 +231,10 @@ Minimal. `pyproject.toml` declares:
   `src/wardline/__init__.py:3`). The probe can run against a real
   `pip install wardline` in the dev venv, which is the honest lock-in.
   **Resolved**: Task 6.
-- **UQ-WP3-04** — **Minimum Python version**: 3.11 (for `ast.unparse` which is
-  useful later, plus better error messages) vs 3.12 (newer features but higher
-  install barrier for users). **Proposal**: 3.11 minimum; Clarion users are
-  developers with reasonable Python versions available. **Resolution by**: Task 1.
+- **UQ-WP3-04** — **Minimum Python version**: **Resolved — 3.11**. Picked
+  for `ast.unparse` availability and better error messages; 3.12 raises the
+  install barrier without a Sprint 1 payoff. Clarion users are developers
+  with reasonable Python versions available. **Resolved**: Task 1.
 - **UQ-WP3-05** — **Module-path normalisation**: the `module_path` entity
   property and the derivation of the dotted-module prefix for L7's
   `canonical_qualified_name` are both rooted at the analysis root (the arg
@@ -264,10 +265,9 @@ Minimal. `pyproject.toml` declares:
   UQ-WP2-07 resolution) or a file under `.clarion/logs/`? **Proposal**: stderr;
   core forwards to tracing; `.clarion/logs/` is a Sprint 2+ decision. **Resolution
   by**: Task 2.
-- **UQ-WP3-10** — **Testing infrastructure**: pytest-only vs pytest + mypy + ruff
-  in CI? Sprint 1 ships pytest + ruff; mypy adoption can wait until the plugin
-  grows enough to benefit. **Proposal**: pytest + ruff; mypy later. **Resolution
-  by**: Task 1.
+- **UQ-WP3-10** — **Testing infrastructure**: **Resolved — pytest + ruff**.
+  Mypy adoption deferred until the plugin grows enough to benefit.
+  **Resolved**: Task 1.
 - **UQ-WP3-11** — **What does the plugin return for an empty `.py` file (zero
   functions)?** An empty `entities` array. Confirm WP2's host handles this without
   tripping any alert. **Resolution by**: Task 4.
