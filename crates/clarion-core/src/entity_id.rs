@@ -13,13 +13,14 @@
 
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct EntityId(String);
 
 impl EntityId {
+    /// Returns the entity ID as a string slice in its canonical 3-segment form.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -28,6 +29,33 @@ impl EntityId {
 impl fmt::Display for EntityId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for EntityId {
+    type Err = EntityIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.splitn(3, ':').collect();
+        match parts.as_slice() {
+            [plugin_id, kind, canonical_qualified_name] => {
+                entity_id(plugin_id, kind, canonical_qualified_name)
+            }
+            _ => Err(EntityIdError::MalformedId {
+                value: s.to_owned(),
+            }),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for EntityId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+        let s = String::deserialize(deserializer)?;
+        s.parse::<EntityId>().map_err(D::Error::custom)
     }
 }
 
@@ -41,12 +69,24 @@ pub enum EntityIdError {
 
     #[error("segment {field} contains reserved ':' separator: {value:?}")]
     SegmentContainsColon { field: &'static str, value: String },
+
+    #[error("EntityId must have exactly 3 colon-separated segments, got: {value:?}")]
+    MalformedId { value: String },
 }
 
 /// Assemble an [`EntityId`] from its three segments.
 ///
-/// `plugin_id` and `kind` are validated against the ADR-022 grammar.
-/// `canonical_qualified_name` is opaque but may not contain `:`.
+/// `plugin_id` and `kind` are validated against the ADR-022 grammar
+/// (`[a-z][a-z0-9_]*`). `canonical_qualified_name` is opaque but may not
+/// contain `:`.
+///
+/// # Errors
+///
+/// - [`EntityIdError::EmptySegment`] if any segment is empty.
+/// - [`EntityIdError::GrammarViolation`] if `plugin_id` or `kind` does not
+///   match the ADR-022 grammar.
+/// - [`EntityIdError::SegmentContainsColon`] if any segment contains `:`
+///   (colon is reserved as the segment separator; UQ-WP1-07).
 pub fn entity_id(
     plugin_id: &str,
     kind: &str,
@@ -54,12 +94,12 @@ pub fn entity_id(
 ) -> Result<EntityId, EntityIdError> {
     validate_grammar("plugin_id", plugin_id)?;
     validate_grammar("kind", kind)?;
-    validate_no_colon("canonical_qualified_name", canonical_qualified_name)?;
     if canonical_qualified_name.is_empty() {
         return Err(EntityIdError::EmptySegment {
             field: "canonical_qualified_name",
         });
     }
+    validate_no_colon("canonical_qualified_name", canonical_qualified_name)?;
     Ok(EntityId(format!(
         "{plugin_id}:{kind}:{canonical_qualified_name}"
     )))
@@ -223,5 +263,49 @@ mod tests {
         let id = entity_id("python", "function", "demo.hello").unwrap();
         let json = serde_json::to_string(&id).unwrap();
         assert_eq!(json, "\"python:function:demo.hello\"");
+    }
+
+    #[test]
+    fn parse_roundtrip_via_from_str() {
+        use std::str::FromStr;
+        let id = entity_id("python", "function", "demo.hello").unwrap();
+        let parsed = EntityId::from_str(id.as_str()).unwrap();
+        assert_eq!(parsed, id);
+    }
+
+    #[test]
+    fn from_str_rejects_fewer_than_three_segments() {
+        use std::str::FromStr;
+        let err = EntityId::from_str("python:function").unwrap_err();
+        assert!(matches!(err, EntityIdError::MalformedId { .. }));
+    }
+
+    #[test]
+    fn from_str_rejects_empty_segments_via_underlying_validator() {
+        use std::str::FromStr;
+        // splitn(3, ':') on "::foo" yields ["", "", "foo"] — empty plugin_id
+        let err = EntityId::from_str("::demo.hello").unwrap_err();
+        assert!(matches!(
+            err,
+            EntityIdError::EmptySegment { field: "plugin_id" }
+        ));
+    }
+
+    #[test]
+    fn deserialize_validates_through_from_str() {
+        // Valid input round-trips.
+        let id: EntityId = serde_json::from_str("\"python:function:demo.hello\"").unwrap();
+        assert_eq!(id.as_str(), "python:function:demo.hello");
+    }
+
+    #[test]
+    fn deserialize_rejects_invalid_ids() {
+        // An unstructured string must fail deserialisation now (pre-fix, it
+        // would silently deserialise into a corrupt EntityId).
+        let result: Result<EntityId, _> = serde_json::from_str("\"notanid\"");
+        assert!(
+            result.is_err(),
+            "expected custom deserialiser to reject non-3-segment input"
+        );
     }
 }
