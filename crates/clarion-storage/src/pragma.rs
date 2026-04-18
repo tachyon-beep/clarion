@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-use crate::error::Result;
+use crate::error::{Result, StorageError};
 
 /// Apply the write-side PRAGMA set: WAL, `synchronous=NORMAL`, `busy_timeout`,
 /// `wal_autocheckpoint`, `foreign_keys`. Called on the writer's connection once,
@@ -11,9 +11,16 @@ use crate::error::Result;
 /// # Errors
 ///
 /// Returns [`crate::error::StorageError::Sqlite`] if any PRAGMA statement fails.
+/// Returns [`crate::error::StorageError::PragmaInvariant`] if WAL mode is not
+/// confirmed after the `PRAGMA journal_mode = WAL` command.
 pub fn apply_write_pragmas(conn: &Connection) -> Result<()> {
     let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
-    debug_assert_eq!(mode.to_ascii_lowercase(), "wal", "WAL not enabled");
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Err(StorageError::PragmaInvariant(format!(
+            "expected WAL journal mode, got {mode:?} — \
+             ADR-011's synchronous=NORMAL durability posture requires WAL"
+        )));
+    }
     conn.execute_batch(concat!(
         "PRAGMA synchronous = NORMAL;",
         "PRAGMA busy_timeout = 5000;",

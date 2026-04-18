@@ -8,7 +8,10 @@ pub enum StorageError {
     Sqlite(#[from] rusqlite::Error),
 
     #[error("connection-pool error: {0}")]
-    Pool(String),
+    Pool(#[from] deadpool_sqlite::PoolError),
+
+    #[error("PRAGMA invariant violated: {0}")]
+    PragmaInvariant(String),
 
     #[error("migration {version} failed: {source}")]
     Migration {

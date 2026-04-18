@@ -53,13 +53,16 @@ fn read_applied_versions(conn: &Connection) -> Result<Vec<u32>> {
         return Ok(Vec::new());
     }
     let mut stmt = conn.prepare("SELECT version FROM schema_migrations ORDER BY version")?;
-    let raw: Vec<i64> = stmt
-        .query_map([], |row| row.get::<_, i64>(0))?
-        .collect::<rusqlite::Result<Vec<i64>>>()?;
-    let out = raw
-        .into_iter()
-        .map(|v| u32::try_from(v).unwrap_or(u32::MAX))
-        .collect();
+    let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let v: i64 = row?;
+        let v_u32 = u32::try_from(v).map_err(|_| StorageError::Migration {
+            version: 0,
+            source: rusqlite::Error::IntegralValueOutOfRange(0, v),
+        })?;
+        out.push(v_u32);
+    }
     Ok(out)
 }
 
@@ -70,8 +73,10 @@ fn apply_one(conn: &mut Connection, m: &Migration) -> Result<()> {
             version: m.version,
             source,
         })?;
-    // Defence in depth: guarantee idempotency even if a migration file forgets
-    // to insert into schema_migrations.
+    // Defence in depth: the migration's own BEGIN/COMMIT has already committed,
+    // including its own INSERT INTO schema_migrations. This second statement
+    // handles only migrations that incorrectly omit their own record INSERT.
+    // INSERT OR IGNORE is a no-op when the version already exists (normal case).
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, name, applied_at) \
          VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
@@ -87,10 +92,18 @@ fn apply_one(conn: &mut Connection, m: &Migration) -> Result<()> {
 /// Returns [`StorageError::Sqlite`] if the query fails for reasons other than
 /// the table not existing (in which case this returns `Ok(0)`).
 pub fn applied_count(conn: &Connection) -> Result<u32> {
-    let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
-            row.get(0)
-        })
-        .unwrap_or(0);
+    let table_exists: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    if table_exists.is_none() {
+        return Ok(0);
+    }
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+        row.get(0)
+    })?;
     Ok(u32::try_from(n).unwrap_or(u32::MAX))
 }

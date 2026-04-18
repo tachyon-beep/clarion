@@ -139,7 +139,7 @@ fn migration_0001_creates_partial_indexes() {
 fn entity_generated_columns_extract_from_properties_json() {
     let tempdir = tempfile::tempdir().unwrap();
     let conn = open_fresh(&tempdir);
-    let props = r#"{"priority": "P1", "git_churn_count": 42}"#;
+    let props = r#"{"priority": 2, "git_churn_count": 42}"#;
     conn.execute(
         "INSERT INTO entities (id, plugin_id, kind, name, short_name, properties, \
          created_at, updated_at) \
@@ -155,6 +155,8 @@ fn entity_generated_columns_extract_from_properties_json() {
         ],
     )
     .unwrap();
+    // priority is a TEXT-affinity generated column; json_extract yields the
+    // JSON-native integer but SQLite coerces it to text on storage.
     let (priority, churn): (Option<String>, Option<i64>) = conn
         .query_row(
             "SELECT priority, git_churn_count FROM entities WHERE id = ?1",
@@ -162,8 +164,41 @@ fn entity_generated_columns_extract_from_properties_json() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(priority.as_deref(), Some("P1"));
+    assert_eq!(priority.as_deref(), Some("2"));
     assert_eq!(churn, Some(42));
+}
+
+#[test]
+fn fts_trigger_populates_entity_fts_on_insert() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let conn = open_fresh(&tempdir);
+    let summary_json = r#"{"briefing": {"purpose": "refresh session tokens"}}"#;
+    conn.execute(
+        "INSERT INTO entities (id, plugin_id, kind, name, short_name, properties, summary, \
+         created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, '{}', ?6, \
+         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        params![
+            "python:function:auth.refresh",
+            "python",
+            "function",
+            "auth.refresh",
+            "refresh",
+            summary_json,
+        ],
+    )
+    .unwrap();
+
+    // MATCH against the FTS5 virtual table; the entities_ai trigger should have
+    // populated the summary_text field from summary.briefing.purpose.
+    let matched_id: String = conn
+        .query_row(
+            "SELECT entity_id FROM entity_fts WHERE entity_fts MATCH 'refresh'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("entity_fts row should exist after INSERT trigger fires");
+    assert_eq!(matched_id, "python:function:auth.refresh");
 }
 
 #[test]
