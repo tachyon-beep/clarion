@@ -8,7 +8,9 @@
 //!   - `limits`     — Task 4: core-enforced ceilings and circuit-breakers (ADR-021 §2b–§2d).
 //!   - `discovery`  — Task 5: `$PATH` scanning for `clarion-plugin-*` executables (L9, ADR-021 §L9).
 //!   - `host`       — Task 6: plugin-host supervisor (ADR-021 §Layer 2, ADR-022, UQ-WP2-11).
+//!   - `breaker`    — Task 7: crash-loop breaker (ADR-002 + UQ-WP2-10).
 
+pub mod breaker;
 pub mod discovery;
 pub mod host;
 pub mod jail;
@@ -19,6 +21,7 @@ pub(crate) mod mock;
 pub mod protocol;
 pub mod transport;
 
+pub use breaker::{CrashLoopBreaker, CrashLoopState, FINDING_DISABLED_CRASH_LOOP};
 pub use discovery::{DiscoveredPlugin, DiscoveryError, discover, discover_on_path};
 pub use host::{AcceptedEntity, HostError, HostFinding, PluginHost};
 pub use jail::{JailError, jail, jail_to_string};
