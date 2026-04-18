@@ -2,7 +2,7 @@
 
 **Status**: DRAFT — blocked-by WP2
 **Anchoring design**: [detailed-design.md §1 (Plugin implementation — Python specifics)](../../clarion/v0.1/detailed-design.md#1-plugin-implementation-detail), [system-design.md §2](../../clarion/v0.1/system-design.md#2-core--plugin-architecture)
-**Accepted ADRs**: [ADR-018](../../clarion/adr/ADR-018-identity-reconciliation.md), [ADR-022](../../clarion/adr/ADR-022-core-plugin-ontology.md)
+**Accepted ADRs**: [ADR-018](../../clarion/adr/ADR-018-identity-reconciliation.md), [ADR-022](../../clarion/adr/ADR-022-core-plugin-ontology.md), [ADR-023](../../clarion/adr/ADR-023-tooling-baseline.md)
 **Predecessor**: [WP2](./wp2-plugin-host.md).
 **Blocks**: the Sprint 1 walking-skeleton demo.
 
@@ -167,12 +167,14 @@ exercised lock-in is the honest one.
 
 ```
 /plugins/python/
-  pyproject.toml                  # package metadata, entry-point: clarion-plugin-python
+  pyproject.toml                  # package metadata, entry-point, [tool.ruff], [tool.mypy], [tool.pytest]
   plugin.toml                     # L5 manifest
+  .pre-commit-config.yaml         # ADR-023: ruff-check, ruff-format, mypy hooks
   README.md                       # install + dev notes
   src/
     clarion_plugin_python/
       __init__.py
+      py.typed                    # PEP 561 marker so downstream mypy picks up stubs
       __main__.py                 # entry point; runs the JSON-RPC server loop
       server.py                   # JSON-RPC framing + dispatch
       extractor.py                # ast visitor producing entities (L7)
@@ -205,10 +207,15 @@ not core-vendored code" per ADR-022.
 
 Minimal. `pyproject.toml` declares:
 
-- `python_requires = ">=3.11"` (UQ-WP3-04 — proposal; revisit Task 1).
+- `python_requires = ">=3.11"` (UQ-WP3-04 — resolved: 3.11).
 - No runtime deps beyond the standard library for Sprint 1. `ast`, `json`, `sys`,
-  `os`, `pathlib` are all stdlib.
-- Dev deps: `pytest`, `pytest-cov`, `ruff`, `mypy`.
+  `os`, `pathlib` are all stdlib. Task 6 adds `packaging` for Wardline version
+  comparisons.
+- Dev deps (per ADR-023 tooling baseline): `pytest`, `pytest-cov`, `ruff`
+  (lint + format; strict config), **`mypy`** (`--strict` from day 1), and
+  `pre-commit` (hooks for ruff-check, ruff-format, mypy). All wired into CI
+  via a separate GitHub Actions job that installs the plugin editable and
+  runs `ruff check`, `ruff format --check`, `mypy --strict`, and `pytest`.
 - Optional dep: `wardline` (declared in `[project.optional-dependencies] integrations`).
   The plugin works without Wardline; declaring it optional allows `pip install
   clarion-plugin-python[integrations]` to pull Wardline when desired.
@@ -265,9 +272,16 @@ Minimal. `pyproject.toml` declares:
   UQ-WP2-07 resolution) or a file under `.clarion/logs/`? **Proposal**: stderr;
   core forwards to tracing; `.clarion/logs/` is a Sprint 2+ decision. **Resolution
   by**: Task 2.
-- **UQ-WP3-10** — **Testing infrastructure**: **Resolved — pytest + ruff**.
-  Mypy adoption deferred until the plugin grows enough to benefit.
-  **Resolved**: Task 1.
+- **UQ-WP3-10** — **Testing + tooling infrastructure**: ~~"pytest + ruff;
+  mypy adoption deferred until the plugin grows enough to benefit."~~ —
+  **reopened 2026-04-18 and re-resolved by
+  [ADR-023](../../clarion/adr/ADR-023-tooling-baseline.md)**. The deferred
+  framing was the canonical tell for unexamined tech debt: every Python
+  module written without mypy would be a module to retrofit later. ADR-023
+  adopts `pytest`, `ruff` (strict `select = ["ALL"]` config minus pragmatic
+  excludes), **`mypy --strict` from day 1**, and **`pre-commit`** wiring
+  ruff-check + ruff-format + mypy into every `git commit`. CI runs the same
+  four gates as a separate job. **Resolved**: Task 1.
 - **UQ-WP3-11** — **What does the plugin return for an empty `.py` file (zero
   functions)?** An empty `entities` array. Confirm WP2's host handles this without
   tripping any alert. **Resolution by**: Task 4.
@@ -278,21 +292,36 @@ Minimal. `pyproject.toml` declares:
 
 ## 6. Task ledger
 
-### Task 1 — Python package skeleton
+### Task 1 — Python package skeleton + ADR-023 tooling baseline
 
 **Files**:
-- Create `/plugins/python/pyproject.toml`
+- Create `/plugins/python/pyproject.toml` (package metadata + `[tool.ruff]` strict config + `[tool.mypy]` `strict = true` + `[tool.pytest.ini_options]`)
+- Create `/plugins/python/.pre-commit-config.yaml` (ruff-check, ruff-format, mypy hooks)
 - Create `/plugins/python/src/clarion_plugin_python/__init__.py`
+- Create `/plugins/python/src/clarion_plugin_python/py.typed` (PEP 561 marker)
 - Create `/plugins/python/src/clarion_plugin_python/__main__.py`
 - Create `/plugins/python/README.md`
 - Create `/plugins/python/tests/__init__.py`
+- Extend `/.github/workflows/ci.yml` with a `python-plugin` job running ruff + mypy + pytest
 
 Steps:
 
-- [ ] Write `pyproject.toml` with `project.name = "clarion-plugin-python"`, `requires-python = ">=3.11"` (UQ-WP3-04), `project.scripts.clarion-plugin-python = "clarion_plugin_python.__main__:main"`, no runtime deps, dev deps `pytest` + `ruff`.
-- [ ] Write `__main__.py` with a `main()` that prints `clarion-plugin-python 0.1.0\n` to stderr and exits 0 (so `pip install -e .` produces a verifiable binary).
-- [ ] `pip install -e plugins/python` and verify `which clarion-plugin-python` returns a path and running it exits 0.
-- [ ] Commit: `feat(wp3): Python plugin package skeleton`.
+- [ ] Write `pyproject.toml` with `project.name = "clarion-plugin-python"`, `requires-python = ">=3.11"` (UQ-WP3-04), `project.scripts.clarion-plugin-python = "clarion_plugin_python.__main__:main"`, no runtime deps, dev deps `pytest`, `pytest-cov`, `ruff`, `mypy`, `pre-commit` (ADR-023).
+- [ ] Configure `[tool.ruff]` with `target-version = "py311"`, `line-length = 100`, `select = ["ALL"]`, pragmatic excludes per ADR-023 (`D` docstring lints relaxed; `COM812`/`ISC001` to avoid format conflict; per-file-ignores for `tests/` and fixtures). `[tool.ruff.format]` matches defaults.
+- [ ] Configure `[tool.mypy]` with `strict = true`, `python_version = "3.11"`, `warn_unused_configs = true`. Add `[[tool.mypy.overrides]]` entries for any third-party modules without stubs (Sprint 1: none yet; Task 6 may add `packaging` once it's pulled in).
+- [ ] Configure `[tool.pytest.ini_options]` with `testpaths = ["tests"]`, `addopts = "--strict-markers --cov=clarion_plugin_python --cov-report=term-missing"`.
+- [ ] Write `.pre-commit-config.yaml` with hooks for `ruff check --fix`, `ruff format`, and `mypy` (using `additional_dependencies` to install stubs mypy needs inside the hook env).
+- [ ] Write `py.typed` as an empty file — PEP 561 marker making the package's own type hints visible to downstream mypy consumers.
+- [ ] Write `__main__.py` with a typed `def main() -> int:` that writes `clarion-plugin-python 0.1.0\n` to `sys.stderr` and returns 0 (so `pip install -e .` produces a verifiable binary with full type coverage).
+- [ ] `pip install -e plugins/python[dev]` (dev extras) and verify locally:
+  - `which clarion-plugin-python` returns a path and running it exits 0.
+  - `ruff check plugins/python` passes.
+  - `ruff format --check plugins/python` passes.
+  - `mypy --strict plugins/python` passes (Sprint 1's tiny surface makes this trivial; the discipline is set for every subsequent task).
+  - `pytest plugins/python` passes (no tests yet — an empty test discovery returning "no tests ran" is the expected Task-1 shape).
+- [ ] `pre-commit install` and `pre-commit run --all-files` passes.
+- [ ] Extend `.github/workflows/ci.yml` with a `python-plugin` job that installs Python 3.11, runs `pip install -e plugins/python[dev]`, and executes the same four gates (`ruff check`, `ruff format --check`, `mypy --strict`, `pytest`).
+- [ ] Commit: `feat(wp3): Python plugin package skeleton + ADR-023 tooling baseline`.
 
 ### Task 2 — JSON-RPC server loop + stdout discipline
 
@@ -424,7 +453,12 @@ WP3 is done for Sprint 1 when all of:
   Rust (`clarion-core::entity_id`) and Python (`test_entity_id.py`) test suites.
 - Round-trip self-test passes.
 - Every UQ-WP3-* is marked resolved in §5.
-- `pip install -e plugins/python` works on a clean Python 3.11 venv and
+- `pip install -e plugins/python[dev]` works on a clean Python 3.11 venv and
   `clarion-plugin-python` is on `$PATH`.
+- **ADR-023 gates green** (all four): `ruff check plugins/python`,
+  `ruff format --check plugins/python`, `mypy --strict plugins/python`, and
+  `pytest plugins/python` all pass on the WP3 closing commit.
+- **`pre-commit run --all-files` passes** on the WP3 closing commit.
+- **GitHub Actions `python-plugin` job green** on the WP3 PR.
 
 See also [`signoffs.md` Tier A](./signoffs.md#tier-a--sprint-1-close-walking-skeleton).

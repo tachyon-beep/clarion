@@ -182,3 +182,4 @@ and pointed at [`signoffs.md`](./signoffs.md) Tier A.
 - [ADR-018 Identity reconciliation](../../clarion/adr/ADR-018-identity-reconciliation.md)
 - [ADR-021 Plugin authority hybrid](../../clarion/adr/ADR-021-plugin-authority-hybrid.md)
 - [ADR-022 Core/plugin ontology](../../clarion/adr/ADR-022-core-plugin-ontology.md)
+- [ADR-023 Rust + Python tooling baseline](../../clarion/adr/ADR-023-tooling-baseline.md)

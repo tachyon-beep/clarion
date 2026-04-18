@@ -22,6 +22,7 @@ This folder is the canonical home for authored Clarion architecture decision rec
 | [ADR-018](./ADR-018-identity-reconciliation.md) | Identity reconciliation — Clarion translates; Wardline owns its qualnames; direct REGISTRY import with version pinning | Accepted |
 | [ADR-021](./ADR-021-plugin-authority-hybrid.md) | Plugin authority model: hybrid (declared capabilities + core-enforced minimums) | Accepted |
 | [ADR-022](./ADR-022-core-plugin-ontology.md) | Core/plugin ontology ownership boundary | Accepted |
+| [ADR-023](./ADR-023-tooling-baseline.md) | Rust + Python tooling baseline (edition 2024, pedantic, cargo-deny, nextest, CI; ruff + mypy-strict + pre-commit) | Accepted |
 
 ## Backlog still tracked in the detailed design
 

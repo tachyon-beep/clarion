@@ -2,7 +2,7 @@
 
 **Status**: DRAFT — pending sprint kickoff
 **Anchoring design**: [system-design.md §4 (Storage)](../../clarion/v0.1/system-design.md#4-storage), [detailed-design.md §3 (Storage impl)](../../clarion/v0.1/detailed-design.md#3-storage-implementation)
-**Accepted ADRs**: [ADR-001](../../clarion/adr/ADR-001-rust-for-core.md), [ADR-003](../../clarion/adr/ADR-003-entity-id-scheme.md), [ADR-011](../../clarion/adr/ADR-011-writer-actor-concurrency.md)
+**Accepted ADRs**: [ADR-001](../../clarion/adr/ADR-001-rust-for-core.md), [ADR-003](../../clarion/adr/ADR-003-entity-id-scheme.md), [ADR-011](../../clarion/adr/ADR-011-writer-actor-concurrency.md), [ADR-023](../../clarion/adr/ADR-023-tooling-baseline.md)
 **Backlog ADR that may surface**: ADR-005 (`.clarion/` git-committable subpaths)
 **Predecessor**: none — WP1 is the foundation of Sprint 1.
 **Blocks**: WP2, WP3.
@@ -213,13 +213,18 @@ the same error-handling and async conventions.
 
 | Purpose | Candidate | Locks what for later WPs |
 |---|---|---|
+| Rust edition | **2024** (per ADR-023) | Every crate, every future WP compiles against 2024 |
 | SQLite binding | `rusqlite` (bundled SQLite) — per ADR-011 | Error-handling shape (wrapped, not re-exported; see UQ-WP1-06) |
 | SQLite read pool | `deadpool-sqlite` — per ADR-011 | Reader acquisition pattern for WP2/WP6/WP8 |
 | CLI parsing | `clap` | Subcommand/flag conventions |
 | Error handling | `thiserror` (lib) + `anyhow` (bin) | The "library uses typed errors, binary uses anyhow" split |
 | Logging | `tracing` + `tracing-subscriber` | Log shape for later serve/analyze output |
 | Async runtime | `tokio` (locked by ADR-011) | Writer-actor is a `tokio::task`; WP2 plugin I/O and WP8 HTTP inherit this runtime |
-| Testing | stock `cargo test` + `assert_cmd` for CLI + `tokio::test` for async | Integration-test style for later CLI-touching WPs |
+| Test runner | **`cargo-nextest`** (per ADR-023) — `assert_cmd` for CLI + `tokio::test` for async | Integration-test style for later CLI-touching WPs; exit criteria and demo scripts use `cargo nextest run`, not `cargo test` |
+| Lint floor | **`clippy::pedantic = "warn"` + `unsafe_code = "forbid"`** via workspace `[lints]` block (per ADR-023) | Every new crate declares `lints.workspace = true`; baseline is a floor that later WPs may tighten but not loosen |
+| Formatting | **`rustfmt.toml`** with `edition = "2024"`, `max_width = 100`, Unix newlines (per ADR-023) | CI gates `cargo fmt --all -- --check` on every PR |
+| Supply chain | **`cargo-deny`** with `deny.toml` (v2 schema — advisories, license allowlist, bans, unknown-registry deny) (per ADR-023) | License allowlist expansion requires an explicit commit; new deps with unlisted licenses fail the merge gate |
+| CI | **GitHub Actions** workflow at `.github/workflows/ci.yml` running fmt-check + pedantic clippy + nextest + cargo-doc + cargo-deny (per ADR-023) | Every subsequent WP's merge gate passes through the same five steps |
 
 **No cross-sibling dependencies in Sprint 1.** Filigree and Wardline do not appear in
 `Cargo.toml`. WP3's Wardline import is Python-side only.
@@ -274,32 +279,58 @@ if they don't block tasks. Each has a proposed resolution-by trigger.
   `.clarion/`?** **Proposal**: yes, unless `--force`; `--force` is not implemented
   in Sprint 1 but the error message names it for future use. **Resolution by**:
   Task 5.
-- **UQ-WP1-09** — **What Rust version?** 2021 edition, stable channel. MSRV
-  floats with the latest stable at sprint start; no old-compiler support. Fine to
-  document and move on. **Resolution by**: Task 1.
+- **UQ-WP1-09** — **Rust toolchain + workspace tooling baseline**:
+  ~~"2021 edition, stable channel. MSRV floats with the latest stable at
+  sprint start; fine to document and move on."~~ — **reopened 2026-04-18
+  and re-resolved by [ADR-023](../../clarion/adr/ADR-023-tooling-baseline.md)**.
+  The original "move on" framing was the canonical tell for an
+  unexamined default. ADR-023 adopts **edition 2024**, workspace-level
+  `[lints]` with `clippy::pedantic = "warn"` + `unsafe_code = "forbid"`,
+  pinned `rustfmt.toml` + `clippy.toml`, **`cargo-nextest`** as the test
+  runner, **`cargo-deny`** for supply-chain hygiene, and **GitHub Actions
+  CI** running fmt-check + pedantic clippy + nextest + cargo-doc +
+  cargo-deny on every PR. `rust-toolchain.toml` pins `channel = "stable"`
+  with `clippy`, `rustfmt`, and `llvm-tools-preview` components. The
+  retrofit cost of adopting any of these after real code landed was
+  materially higher than adopting them at commit zero — the asymmetry is
+  explicit in ADR-023. **Resolved**: Task 1.
 
 ## 6. Task ledger
 
 Each task is a discrete test → implement → verify → commit cycle. Tasks are ordered;
 do not parallelise within WP1. Commits are one-per-task unless noted.
 
-### Task 1 — Workspace skeleton
+### Task 1 — Workspace skeleton + tooling baseline (ADR-023)
 
 **Files**:
-- Create `/Cargo.toml` (workspace root)
+- Create `/Cargo.toml` (workspace root — `[workspace.package]`, `[workspace.dependencies]`, and `[workspace.lints]` per ADR-023)
 - Create `/crates/clarion-core/{Cargo.toml,src/lib.rs}`
 - Create `/crates/clarion-storage/{Cargo.toml,src/lib.rs}`
 - Create `/crates/clarion-cli/{Cargo.toml,src/main.rs}`
-- Create `/rust-toolchain.toml` pinning stable
-- Create `/.gitignore` entries for `/target`, `*.db`, `*.db-journal`, `*.db-wal`
+- Create `/rust-toolchain.toml` pinning stable with `clippy` + `rustfmt` + `llvm-tools-preview`
+- Create `/rustfmt.toml` (`edition = "2024"`, `max_width = 100`, Unix newlines)
+- Create `/clippy.toml` (relaxed pedantic thresholds per ADR-023)
+- Create `/deny.toml` (cargo-deny v2 schema — advisories, license allowlist, bans, sources)
+- Create `/.github/workflows/ci.yml` (fmt-check + pedantic clippy + nextest + cargo-doc + cargo-deny)
+- Create `/.gitignore` entries for `/target`, `*-wal`, `*-shm` (project-level `.clarion/clarion.db` is tracked per ADR-005 — do **not** blanket-ignore `*.db`)
 
 Steps:
 
-- [ ] Write workspace `Cargo.toml` listing the three members; add shared `[workspace.package]` fields (edition `2021`, license, repository). Declare `tokio`, `rusqlite` (with `bundled` feature), `deadpool-sqlite`, `thiserror`, and `tracing` as workspace dependencies (ADR-011-locked stack).
-- [ ] Write each crate's `Cargo.toml`. `clarion-core` takes `thiserror`. `clarion-storage` takes core + `rusqlite` + `deadpool-sqlite` + `tokio` (features `rt-multi-thread`, `macros`, `sync`). `clarion-cli` takes both + `clap` + `anyhow` + `tracing` + `tokio` (same features).
-- [ ] Add `lib.rs` / `main.rs` stubs that compile (`pub fn hello()` stub ok).
-- [ ] Verify: `cargo build --workspace` passes.
-- [ ] Commit: `feat(wp1): workspace skeleton with three crates`.
+- [ ] Write workspace `Cargo.toml` listing the three members. `[workspace.package]` pins `edition = "2024"` (ADR-023), license, repository, and `rust-version = "1.85"` (or the current stable MSRV at sprint start). Declare `tokio`, `rusqlite` (with `bundled` feature), `deadpool-sqlite`, `thiserror`, `tracing`, `clap`, `anyhow`, `serde` + `serde_json`, plus the `tempfile` and `assert_cmd` dev-deps as workspace dependencies (ADR-011-locked stack; dev-deps centralised).
+- [ ] Add `[workspace.lints.rust]` with `unsafe_code = "forbid"` and `[workspace.lints.clippy]` with `pedantic = "warn"` plus the pragmatic allows from ADR-023 (`module_name_repetitions`, `must_use_candidate`, `missing_errors_doc`).
+- [ ] Write each crate's `Cargo.toml`. Every crate declares `lints.workspace = true` so a later-added crate cannot drift off the ADR-023 floor. `clarion-core` takes `thiserror` + `serde` + `serde_json`. `clarion-storage` takes core + `rusqlite` + `deadpool-sqlite` + `tokio` (features `rt-multi-thread`, `macros`, `sync`). `clarion-cli` takes both + `clap` + `anyhow` + `tracing` + `tracing-subscriber` + `tokio` (same features).
+- [ ] Write `rust-toolchain.toml` per ADR-023 (channel `stable`; components `clippy`, `rustfmt`, `llvm-tools-preview`; `profile = "minimal"`).
+- [ ] Write `rustfmt.toml`, `clippy.toml`, `deny.toml` as specified in ADR-023.
+- [ ] Write `.github/workflows/ci.yml` with jobs for fmt-check, pedantic clippy, nextest, cargo-doc, cargo-deny. Use `dtolnay/rust-toolchain@stable`, `Swatinem/rust-cache@v2`, and `taiki-e/install-action` for nextest + cargo-deny installs.
+- [ ] Add `lib.rs` / `main.rs` stubs that compile cleanly against pedantic (avoid `pub fn hello()` defaults that trigger `missing_docs_in_private_items` or similar — a crate-level `//!` doc comment + a module-level stub are sufficient).
+- [ ] Verify locally (all gates must pass on a clean checkout):
+  - `cargo build --workspace`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+  - `cargo nextest run --all-features` (install via `cargo install cargo-nextest --locked` if not already present)
+  - `cargo deny check` (install via `cargo install cargo-deny --locked` if not present)
+  - `cargo doc --no-deps --all-features`
+- [ ] Commit: `feat(wp1): workspace skeleton + ADR-023 tooling baseline`.
 
 ### Task 2 — Entity-ID assembler (L2)
 
@@ -456,12 +487,18 @@ Steps:
 WP1 is done for Sprint 1 when **all** of the following hold:
 
 - `cargo build --workspace --release` succeeds on a clean Linux checkout.
-- `cargo test --workspace` passes (all task-introduced tests + pre-existing).
+- `cargo fmt --all -- --check` passes (ADR-023 gate).
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes against `clippy::pedantic = "warn"` (ADR-023 gate).
+- `cargo nextest run --workspace --all-features` passes (all task-introduced tests + pre-existing; ADR-023 swaps `cargo test` for `cargo nextest`).
+- `cargo deny check` passes (ADR-023 gate; license allowlist + advisories + bans + sources all green).
+- `cargo doc --no-deps --all-features` builds without warnings (ADR-023 gate).
+- **GitHub Actions CI green** on the WP1 PR across all five jobs (fmt, clippy, nextest, doc, deny) (ADR-023 gate).
 - `clarion install && clarion analyze .` in a fresh tempdir produces the expected
   `skipped_no_plugins` run row with zero entities.
 - L1 (full schema migration `0001`), L2 (`entity_id()` implementation), L3
   (WriterCmd + per-N-batch writer-actor) are each covered by at least one test.
 - ADR-005 is Accepted and linked from the ADR index.
+- ADR-023 is Accepted and linked from the ADR index (authored pre-Task-1; exit gate is that every Task-1 artefact listed in ADR-023's Decision section is present).
 - Every UQ-WP1-* is marked resolved with the chosen outcome recorded as a comment
   in the code, an ADR amendment, or an update to this doc's §5.
 
