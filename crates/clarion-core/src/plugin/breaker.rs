@@ -71,8 +71,12 @@ impl CrashLoopBreaker {
 
     /// Current state without recording a new crash (useful pre-spawn check).
     ///
-    /// Prunes stale events from the window, then compares the remaining count
-    /// to the threshold.
+    /// Counts events within the rolling window and compares to the threshold.
+    /// Does NOT eagerly prune stale events from the underlying storage; call
+    /// [`record_crash`](Self::record_crash) (or `record_crash_at`) to trigger
+    /// pruning. In practice the `VecDeque` length is bounded by crash rate ×
+    /// window, so unbounded-growth-without-record_crash is not a realistic
+    /// production scenario.
     pub fn state(&self) -> CrashLoopState {
         let now = Instant::now();
         let live_count = self
@@ -277,8 +281,9 @@ mod tests {
 
             // Step 2: read initialize response — crashing mock responds normally here.
             let _init_resp_frame =
-                read_frame(mock.stdout(), ContentLengthCeiling::new(1024 * 1024))
-                    .expect("cycle {cycle}: crashing mock must respond to initialize");
+                read_frame(mock.stdout(), ContentLengthCeiling::new(1024 * 1024)).unwrap_or_else(
+                    |e| panic!("cycle {cycle}: crashing mock must respond to initialize: {e}"),
+                );
 
             // Step 3: send initialized notification → mock transitions to Crashed.
             let init_note = make_notification("initialized", &InitializedNotification {});
