@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      - name: test
+        run: cargo nextest run --workspace --all-features --no-tests=pass
+
+      - name: doc
+        run: cargo doc --workspace --no-deps --all-features
+
+      - name: install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: deny
+        run: cargo deny check

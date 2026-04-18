@@ -22,16 +22,22 @@ locked design requires a follow-up ADR and cross-WP impact analysis.
 
 ### A.1 Storage layer (WP1)
 
-- [ ] **A.1.1** — `cargo build --workspace --release` succeeds on a clean Linux checkout. Proof: CI log or commit hash.
-- [ ] **A.1.2** — `cargo test --workspace` passes. Proof: test run log.
-- [ ] **A.1.3** — **L1 locked**: migration file `0001_initial_schema.sql` contains every table, virtual table, trigger, generated column, and view from [detailed-design.md §3](../../clarion/v0.1/detailed-design.md#3-storage-implementation): tables `entities`, `entity_tags`, `edges`, `findings`, `summary_cache`, `runs`, `schema_migrations`; virtual table `entity_fts` (FTS5); triggers `entities_ai`, `entities_au`, `entities_ad`; generated columns `entities.priority` + `ix_entities_priority`, `entities.git_churn_count` + `ix_entities_churn`; view `guidance_sheets`. Proof: migration file commit; verification via `sqlite3 < migrations/0001_initial_schema.sql` against a fresh DB produces the expected schema; `schema_apply` integration test (WP1 Task 3) passes all assertions. _Locked on ______._
-- [ ] **A.1.4** — **L2 locked**: `entity_id()` Rust assembler produces the 3-segment `{plugin_id}:{kind}:{canonical_qualified_name}` form per ADR-003 + ADR-022 and passes all rows in `/fixtures/entity_id.json`. Proof: passing test in `clarion-core`. _Locked on ______._
-- [ ] **A.1.5** — **L3 locked**: `WriterCmd` enum and per-N-batch writer-actor shipped; per-command ack, batch-boundary commit, rollback on `FailRun` each have a passing test. Proof: tests in `clarion-storage`. _Locked on ______._
-- [ ] **A.1.6** — `clarion install` in a fresh tempdir produces `.clarion/{clarion.db, config.json, .gitignore}` **plus** a `clarion.yaml` stub at the project root (per [detailed-design.md §File layout](../../clarion/v0.1/detailed-design.md#file-layout); `.clarion/` holds internal state, `clarion.yaml` is the user-edited config). Proof: integration test passing.
-- [ ] **A.1.7** — `clarion install` refuses to overwrite an existing `.clarion/` without `--force`. Proof: negative integration test passing.
-- [ ] **A.1.8** — `clarion analyze .` in a plugin-less scratch dir produces a `runs` row with status `skipped_no_plugins`. Proof: integration test passing.
-- [ ] **A.1.9** — **ADR-005 authored** and moved from backlog to Accepted in [`../../clarion/adr/README.md`](../../clarion/adr/README.md). Proof: ADR file commit.
-- [ ] **A.1.10** — Every UQ-WP1-* marked resolved in [`wp1-scaffold.md §5`](./wp1-scaffold.md#5-unresolved-questions). Proof: doc commit showing resolution state.
+- [x] **A.1.1** — `cargo build --workspace --release` succeeds on a clean Linux checkout. Proof: CI log or commit hash.
+- [x] **A.1.2** — `cargo nextest run --workspace --all-features` passes (ADR-023 swaps `cargo test` for nextest). Proof: CI log or local run log.
+- [x] **A.1.2a** — `cargo fmt --all -- --check` passes (ADR-023 gate). Proof: CI log.
+- [x] **A.1.2b** — `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes against `clippy::pedantic = "warn"` (ADR-023 gate). Proof: CI log.
+- [x] **A.1.2c** — `cargo deny check` passes — advisories, licenses, bans, sources all green (ADR-023 gate). Proof: CI log.
+- [x] **A.1.2d** — `cargo doc --no-deps --all-features` builds without warnings (ADR-023 gate). Proof: CI log.
+- [x] **A.1.2e** — GitHub Actions CI workflow exists at `.github/workflows/ci.yml` and all five jobs (fmt, clippy, nextest, doc, deny) are green on the WP1 PR (ADR-023 gate). Proof: PR URL + green-checks screenshot or CI log.
+- [x] **A.1.3** — **L1 locked**: migration file `0001_initial_schema.sql` contains every table, virtual table, trigger, generated column, and view from [detailed-design.md §3](../../clarion/v0.1/detailed-design.md#3-storage-implementation): tables `entities`, `entity_tags`, `edges`, `findings`, `summary_cache`, `runs`, `schema_migrations`; virtual table `entity_fts` (FTS5); triggers `entities_ai`, `entities_au`, `entities_ad`; generated columns `entities.priority` + `ix_entities_priority`, `entities.git_churn_count` + `ix_entities_churn`; view `guidance_sheets`. Proof: migration file commit; verification via `sqlite3 < migrations/0001_initial_schema.sql` against a fresh DB produces the expected schema; `schema_apply` integration test (WP1 Task 3) passes all assertions. _Locked on 2026-04-18._
+- [x] **A.1.4** — **L2 locked**: `entity_id()` Rust assembler produces the 3-segment `{plugin_id}:{kind}:{canonical_qualified_name}` form per ADR-003 + ADR-022 and passes all rows in `/fixtures/entity_id.json`. Proof: passing test in `clarion-core`. _Locked on 2026-04-18._
+- [x] **A.1.5** — **L3 locked**: `WriterCmd` enum and per-N-batch writer-actor shipped; per-command ack, batch-boundary commit, rollback on `FailRun` each have a passing test. Proof: tests in `clarion-storage`. _Locked on 2026-04-18._
+- [x] **A.1.6** — `clarion install` in a fresh tempdir produces `.clarion/{clarion.db, config.json, .gitignore}` **plus** a `clarion.yaml` stub at the project root (per [detailed-design.md §File layout](../../clarion/v0.1/detailed-design.md#file-layout); `.clarion/` holds internal state, `clarion.yaml` is the user-edited config). Proof: integration test passing.
+- [x] **A.1.7** — `clarion install` refuses to overwrite an existing `.clarion/` without `--force`. Proof: negative integration test passing.
+- [x] **A.1.8** — `clarion analyze .` in a plugin-less scratch dir produces a `runs` row with status `skipped_no_plugins`. Proof: integration test passing.
+- [x] **A.1.9** — **ADR-005 authored** and moved from backlog to Accepted in [`../../clarion/adr/README.md`](../../clarion/adr/README.md). Proof: ADR file commit.
+- [x] **A.1.9a** — **ADR-023 authored** (tooling baseline) and Accepted in the ADR index. Every artefact listed in ADR-023 §Decision is present in Task 1's commit: `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, `deny.toml`, workspace `[lints]` block with every member crate opting in via `lints.workspace = true`, and `.github/workflows/ci.yml`. Proof: ADR file commit + artefact listing in the Task-1 commit message.
+- [x] **A.1.10** — Every UQ-WP1-* marked resolved in [`wp1-scaffold.md §5`](./wp1-scaffold.md#5-unresolved-questions). UQ-WP1-09 specifically reads "resolved by ADR-023" rather than the original "fine to document and move on" framing. Proof: doc commit showing resolution state.
 
 ### A.2 Plugin host (WP2)
 
@@ -53,7 +59,10 @@ locked design requires a follow-up ADR and cross-WP impact analysis.
 - [ ] **A.3.4** — Shared fixture `/fixtures/entity_id.json` passes in both `clarion-core` (Rust `entity_id()`) and `plugins/python` (Python `entity_id()`) test suites. Proof: both test runs green. **This is L2+L7 byte-for-byte alignment proof.**
 - [ ] **A.3.5** — Round-trip self-test passes: plugin extracts entities from its own source and the host persists them. Proof: `test_round_trip.py` passing.
 - [ ] **A.3.6** — Syntax-error files are skipped with a stderr log; the run continues (UQ-WP3-02). Proof: integration test with `syntax_error.py` fixture.
-- [ ] **A.3.7** — Every UQ-WP3-* marked resolved in [`wp3-python-plugin.md §5`](./wp3-python-plugin.md#5-unresolved-questions). Proof: doc commit.
+- [ ] **A.3.7** — Every UQ-WP3-* marked resolved in [`wp3-python-plugin.md §5`](./wp3-python-plugin.md#5-unresolved-questions). UQ-WP3-10 reads "resolved by ADR-023" (mypy-strict adopted) rather than the original "defer mypy" framing. Proof: doc commit.
+- [ ] **A.3.8** — **ADR-023 Python gates green** (all four): `ruff check`, `ruff format --check`, `mypy --strict`, and `pytest` each pass on `plugins/python/` at the WP3 closing commit. Proof: local run log or CI log from the `python-plugin` job.
+- [ ] **A.3.9** — **`pre-commit run --all-files` passes** on the WP3 closing commit. Proof: commit-hook log attached to the closing commit message.
+- [ ] **A.3.10** — **GitHub Actions `python-plugin` job green** on the WP3 PR. Proof: PR URL + CI log.
 
 ### A.4 End-to-end walking skeleton
 
@@ -71,7 +80,7 @@ locked design requires a follow-up ADR and cross-WP impact analysis.
 ### A.6 Documentation hygiene
 
 - [ ] **A.6.1** — [`../v0.1-plan.md`](../v0.1-plan.md) WP1/WP2/WP3 sections updated to reflect actual Sprint 1 narrower scope (Sprint 2+ scope clearly deferred). Proof: doc commit.
-- [ ] **A.6.2** — [`../../clarion/adr/README.md`](../../clarion/adr/README.md) shows ADR-005 moved to Accepted. Proof: doc commit.
+- [ ] **A.6.2** — [`../../clarion/adr/README.md`](../../clarion/adr/README.md) shows ADR-005 and ADR-023 both as Accepted. Proof: doc commit.
 - [ ] **A.6.3** — [`README.md`](./README.md) §4 "Lock-in summary" table has every L-row marked with the `locked on <date>` stamp. Proof: doc commit.
 
 ---

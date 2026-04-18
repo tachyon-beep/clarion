@@ -1,0 +1,105 @@
+//! Writer-actor command protocol (L3 lock-in).
+//!
+//! Per ADR-011, every persistent mutation is a `WriterCmd` variant. The
+//! writer task owns the sole `rusqlite::Connection`; callers enqueue
+//! commands via a bounded `mpsc::Sender<WriterCmd>`. Each variant carries
+//! a `oneshot::Sender` for the per-command ack (UQ-WP1-03 resolution).
+//!
+//! Sprint 1 ships four variants: `BeginRun`, `InsertEntity`, `CommitRun`,
+//! `FailRun`. Later WPs add `InsertEdge`, `InsertFinding`, etc. by appending
+//! variants — the pattern is frozen here.
+
+use tokio::sync::oneshot;
+
+use crate::error::StorageError;
+
+pub type Ack<T> = oneshot::Sender<Result<T, StorageError>>;
+
+/// Run status values. Extended in later WPs; Sprint 1 uses only
+/// `SkippedNoPlugins` (from `clarion analyze` without plugins wired) and
+/// `Failed` (explicit `FailRun`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunStatus {
+    /// Sprint 1 stub: analyze invoked with no plugins registered.
+    SkippedNoPlugins,
+    /// Normal successful completion.
+    Completed,
+    /// Explicit failure via `FailRun`.
+    Failed,
+}
+
+impl RunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunStatus::SkippedNoPlugins => "skipped_no_plugins",
+            RunStatus::Completed => "completed",
+            RunStatus::Failed => "failed",
+        }
+    }
+}
+
+/// Plain-old-data entity record as seen by the writer. Content-hash and
+/// timestamps are supplied by callers; the writer does not compute them.
+#[derive(Debug, Clone)]
+pub struct EntityRecord {
+    pub id: String,
+    pub plugin_id: String,
+    pub kind: String,
+    pub name: String,
+    pub short_name: String,
+    pub parent_id: Option<String>,
+    pub source_file_id: Option<String>,
+    pub source_byte_start: Option<i64>,
+    pub source_byte_end: Option<i64>,
+    pub source_line_start: Option<i64>,
+    pub source_line_end: Option<i64>,
+    /// JSON string; writer inserts verbatim.
+    pub properties_json: String,
+    pub content_hash: Option<String>,
+    pub summary_json: Option<String>,
+    pub wardline_json: Option<String>,
+    pub first_seen_commit: Option<String>,
+    pub last_seen_commit: Option<String>,
+    /// ISO-8601 UTC; writer inserts verbatim.
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// All writer operations as a single enum so the actor loop exhausts
+/// everything via one match.
+#[derive(Debug)]
+pub enum WriterCmd {
+    /// Open a new run. The writer inserts a row into `runs` with status
+    /// `running`, begins an implicit transaction on the entities write
+    /// path, and binds `run_id` into its state.
+    BeginRun {
+        run_id: String,
+        config_json: String,
+        started_at: String,
+        ack: Ack<()>,
+    },
+    /// Insert an entity; also advances the per-batch insert counter and
+    /// commits the in-flight transaction if the batch boundary is crossed.
+    InsertEntity {
+        entity: Box<EntityRecord>,
+        ack: Ack<()>,
+    },
+    /// Commit the in-flight transaction, update the run row to the given
+    /// terminal status + `completed_at` + `stats_json`, and clear per-run
+    /// state.
+    CommitRun {
+        run_id: String,
+        status: RunStatus,
+        completed_at: String,
+        stats_json: String,
+        ack: Ack<()>,
+    },
+    /// Roll back the in-flight transaction, update the run row to
+    /// `failed`, and clear per-run state.
+    FailRun {
+        run_id: String,
+        reason: String,
+        completed_at: String,
+        ack: Ack<()>,
+    },
+}

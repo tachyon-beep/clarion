@@ -1,0 +1,31 @@
+[package]
+name = "clarion-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "clarion"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+clarion-core = { path = "../clarion-core", version = "0.1.0-dev" }
+clarion-storage = { path = "../clarion-storage", version = "0.1.0-dev" }
+rusqlite.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
