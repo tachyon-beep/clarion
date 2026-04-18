@@ -103,8 +103,14 @@ enum MockState {
 pub enum MockBehaviour {
     /// Responds to every request with a well-formed result.
     ///
-    /// For `analyze_file`, returns one placeholder entity
-    /// `{"id":"mock:function:stub","kind":"function"}`.
+    /// For `analyze_file`, returns one entity with:
+    /// - `id`: `"mock:function:stub"`
+    /// - `kind`: `"function"`
+    /// - `qualified_name`: `"stub"`
+    /// - `source.file_path`: the path configured via
+    ///   [`MockPlugin::set_compliant_entity_path`] (defaults to `"/tmp/stub.mock"`
+    ///   which will fail the jail check in tests that use a `TempDir` project root;
+    ///   call the setter before `analyze_file` to supply an in-root path).
     Compliant,
 
     /// Responds to `initialize` normally; crashes after `initialized`.
@@ -153,6 +159,9 @@ pub enum MockBehaviour {
 pub struct MockPlugin {
     behaviour: MockBehaviour,
     state: MockState,
+    /// Source path emitted in the `analyze_file` response entity for
+    /// [`MockBehaviour::Compliant`]. Set via [`set_compliant_entity_path`](Self::set_compliant_entity_path).
+    compliant_entity_path: String,
     /// Bytes the core has written via [`write_frame`]; the mock reads here on
     /// each [`tick`](Self::tick) call.
     inbox: Vec<u8>,
@@ -212,9 +221,21 @@ impl MockPlugin {
         Self {
             behaviour,
             state: MockState::Fresh,
+            compliant_entity_path: "/tmp/stub.mock".to_owned(),
             inbox: Vec::new(),
             outbox: Cursor::new(Vec::new()),
         }
+    }
+
+    /// Override the `source.file_path` emitted by [`MockBehaviour::Compliant`]
+    /// in `analyze_file` responses.
+    ///
+    /// The default is `"/tmp/stub.mock"`, which lies outside any `TempDir`-based
+    /// project root and will fail the jail check. Call this after construction
+    /// and before `analyze_file` to supply a path that exists inside the test's
+    /// `project_root`.
+    pub fn set_compliant_entity_path(&mut self, path: impl Into<String>) {
+        self.compliant_entity_path = path.into();
     }
 
     // ── I/O handles ───────────────────────────────────────────────────────────
@@ -475,8 +496,16 @@ impl MockPlugin {
                     .collect()
             }
             _ => {
-                // Compliant / Crashing / Oversize — original behaviour.
-                vec![serde_json::json!({ "id": "mock:function:stub", "kind": "function" })]
+                // Compliant / Crashing / Oversize — emit a complete RawEntity so
+                // it can survive the host's validation pipeline. The `id` must
+                // equal entity_id("mock", "function", "stub") = "mock:function:stub".
+                let path = self.compliant_entity_path.clone();
+                vec![serde_json::json!({
+                    "id": "mock:function:stub",
+                    "kind": "function",
+                    "qualified_name": "stub",
+                    "source": { "file_path": path }
+                })]
             }
         };
         let result = AnalyzeFileResult { entities };

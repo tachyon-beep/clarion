@@ -47,7 +47,12 @@ use crate::plugin::protocol::{
 };
 use crate::plugin::transport::{Frame, TransportError, read_frame, write_frame};
 
-// ── Finding subcode constants ─────────────────────────────────────────────────
+// ── Host-level finding subcodes ───────────────────────────────────────────────
+//
+// Resource and framing findings live in `limits.rs` next to the types they
+// reference (ContentLengthCeiling, EntityCountCap, etc.). The three subcodes
+// below cover protocol / ontology / manifest-capability failures, which are
+// supervisor-level concerns — they have no natural home in limits.rs.
 
 /// Emitted when a plugin emits an entity whose `kind` is not in the manifest's
 /// `entity_kinds` list (ADR-022 ontology boundary).
@@ -126,10 +131,6 @@ pub enum HostError {
     /// Manifest capability check failed at handshake time.
     #[error("manifest validation at handshake: {0}")]
     Handshake(ManifestError),
-
-    /// Path-jail error (non-escape variants, e.g. `Io` or `NonUtf8Path`).
-    #[error("jail: {0}")]
-    Jail(JailError),
 
     /// Run-cumulative entity cap exceeded; plugin was killed.
     #[error("entity cap exceeded")]
@@ -323,17 +324,12 @@ impl
             .take()
             .ok_or_else(|| HostError::Spawn("no stdout handle".to_owned()))?;
 
-        let mut host = PluginHost {
+        let mut host = PluginHost::new_inner(
             manifest,
-            project_root: canonical_root,
-            reader: std::io::BufReader::new(stdout),
-            writer: std::io::BufWriter::new(stdin),
-            ceiling: ContentLengthCeiling::DEFAULT,
-            entity_cap: EntityCountCap::new(EntityCountCap::DEFAULT_MAX),
-            path_breaker: PathEscapeBreaker::new_default(),
-            next_request_id: 1,
-            findings: Vec::new(),
-        };
+            canonical_root,
+            std::io::BufReader::new(stdout),
+            std::io::BufWriter::new(stdin),
+        );
 
         host.handshake()?;
 
@@ -359,9 +355,17 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
         writer: W,
     ) -> Result<Self, HostError> {
         let canonical_root = std::fs::canonicalize(project_root)?;
-        Ok(PluginHost {
+        Ok(Self::new_inner(manifest, canonical_root, reader, writer))
+    }
+
+    /// Initialise all host fields from already-resolved components.
+    ///
+    /// Both [`spawn`](PluginHost::spawn) and [`connect`](PluginHost::connect)
+    /// delegate here so the field list is maintained in one place.
+    fn new_inner(manifest: Manifest, project_root: PathBuf, reader: R, writer: W) -> Self {
+        PluginHost {
             manifest,
-            project_root: canonical_root,
+            project_root,
             reader,
             writer,
             ceiling: ContentLengthCeiling::DEFAULT,
@@ -369,7 +373,7 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
             path_breaker: PathEscapeBreaker::new_default(),
             next_request_id: 1,
             findings: Vec::new(),
-        })
+        }
     }
 
     /// Perform the `initialize` → `initialized` handshake.
@@ -561,6 +565,13 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
     /// # Errors
     ///
     /// Returns transport / serde errors if the shutdown exchange fails.
+    ///
+    /// # Note
+    ///
+    /// Must not be called after `analyze_file` returns `PathEscapeBreakerTripped`
+    /// or `EntityCapExceeded` — the plugin has already been shut down by the
+    /// host; calling `shutdown()` again writes to a closed pipe and returns
+    /// `HostError::Transport(Io(BrokenPipe))`.
     pub fn shutdown(&mut self) -> Result<(), HostError> {
         self.do_shutdown()
     }
@@ -585,7 +596,17 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
         write_frame(&mut self.writer, &Frame { body })?;
 
         let resp_frame = read_frame(&mut self.reader, self.ceiling)?;
-        let _resp: ResponseEnvelope = serde_json::from_slice(&resp_frame.body)?;
+        let resp: ResponseEnvelope = serde_json::from_slice(&resp_frame.body)?;
+        if resp.id != id {
+            return Err(HostError::Protocol(ProtocolError {
+                code: -32_600,
+                message: format!(
+                    "shutdown response id {} does not match request id {id}",
+                    resp.id
+                ),
+                data: None,
+            }));
+        }
 
         let note = make_notification("exit", &ExitNotification {});
         let body = serde_json::to_vec(&note)?;
@@ -1054,6 +1075,60 @@ ontology_version = "0.1.0"
                 .iter()
                 .any(|f| f.subcode == FINDING_DISABLED_PATH_ESCAPE),
             "must have CLA-INFRA-PLUGIN-DISABLED-PATH-ESCAPE; got: {findings:?}"
+        );
+    }
+
+    // ── T7: in-process happy path ─────────────────────────────────────────────
+
+    /// T7 — happy path (in-process): a compliant plugin with a manifest
+    /// declaring `function` in `entity_kinds` emits one entity whose
+    /// `source.file_path` canonicalises inside `project_root`. The host
+    /// accepts it, returns exactly one `AcceptedEntity`, and emits no findings.
+    #[test]
+    fn t7_in_process_happy_path_accepts_compliant_entity() {
+        let manifest = compliant_manifest(); // entity_kinds = ["function"]
+        let mut mock = MockPlugin::new_compliant();
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        // Create a real file inside project_root so jail's canonicalize succeeds.
+        let entity_file = project_dir.path().join("stub.mock");
+        std::fs::write(&entity_file, b"").expect("create stub.mock");
+
+        // Configure the mock to emit the in-root path.
+        mock.set_compliant_entity_path(entity_file.to_string_lossy().into_owned());
+
+        // Feed analyze_file response into reader.
+        {
+            let req = crate::plugin::protocol::make_request(
+                "analyze_file",
+                &AnalyzeFileParams {
+                    file_path: entity_file.to_string_lossy().into_owned(),
+                },
+                host.next_request_id,
+            );
+            let body = serde_json::to_vec(&req).unwrap();
+            write_frame(mock.stdin(), &Frame { body }).unwrap();
+            mock.tick().expect("tick analyze_file");
+        }
+        append_mock_output_to_host_reader(&mut mock, &mut host.reader);
+
+        let result = host
+            .analyze_file(&entity_file)
+            .expect("analyze_file must not error on happy path");
+
+        assert_eq!(
+            result.len(),
+            1,
+            "compliant entity must be accepted; got {} entities",
+            result.len()
+        );
+        assert_eq!(result[0].kind, "function");
+        assert_eq!(result[0].qualified_name, "stub");
+
+        let findings = host.take_findings();
+        assert!(
+            findings.is_empty(),
+            "no findings expected on happy path; got: {findings:?}"
         );
     }
 

@@ -1,4 +1,3 @@
-// This crate is primarily a binary (see src/main.rs).
-// The empty lib target is required for Cargo to expose
-// `CARGO_BIN_EXE_clarion-plugin-fixture` to integration tests in other crates
-// that list this crate as a dev-dependency.
+//! Binary-only crate. This lib target exists so Cargo resolves the crate
+//! cleanly when it's listed as a workspace member; the actual plugin logic
+//! lives in `src/main.rs`.
