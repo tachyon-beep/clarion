@@ -31,7 +31,7 @@
 //! appears in multiple directories the first occurrence wins (matching
 //! POSIX shell / `which` semantics).
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
@@ -112,10 +112,12 @@ pub fn discover() -> Vec<Result<DiscoveredPlugin, DiscoveryError>> {
 /// try to use the neighbor `plugin.toml`, they will resolve to the *same*
 /// file.  This is expected behaviour given the neighbor convention; see the
 /// module-level docs for the recommended install-prefix layout.
+///
+/// Primarily useful for testing; production callers should use [`discover`].
 #[cfg(unix)]
 pub fn discover_on_path(path_env: &OsStr) -> Vec<Result<DiscoveredPlugin, DiscoveryError>> {
     let mut results = Vec::new();
-    let mut seen_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut seen_dirs: HashSet<PathBuf> = HashSet::new();
     let mut seen_names: HashSet<String> = HashSet::new();
 
     for dir in std::env::split_paths(path_env) {
@@ -159,6 +161,7 @@ pub fn discover_on_path(path_env: &OsStr) -> Vec<Result<DiscoveredPlugin, Discov
             };
 
             // ── Shadowing: first match wins ───────────────────────────────────
+            // Safe to key on String: non-UTF-8 names were filtered above.
             if !seen_names.insert(file_name.clone()) {
                 continue;
             }
@@ -234,14 +237,35 @@ fn load_plugin(exec_path: PathBuf, suffix: &str) -> Result<DiscoveredPlugin, Dis
     })
 }
 
+/// Probe whether `path` is a regular file, distinguishing EACCES from `NotFound`.
+///
+/// Returns:
+/// - `Ok(Some(path))` — exists and is a regular file.
+/// - `Ok(None)` — does not exist, or exists but is not a regular file (e.g. a
+///   directory or a symlink that resolves to a directory).
+/// - `Err(DiscoveryError::Io { … })` — any other I/O error, including EACCES.
+///   This surfaces operator misconfigurations that `Path::is_file()` would
+///   silently hide (it returns `false` on permission-denied).
+fn probe_manifest(path: &std::path::Path) -> Result<Option<PathBuf>, DiscoveryError> {
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => Ok(Some(path.to_owned())),
+        Ok(_) => Ok(None), // exists but not a regular file (e.g. directory or symlink-to-dir)
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(DiscoveryError::Io {
+            path: path.to_owned(),
+            source: e,
+        }),
+    }
+}
+
 /// Resolve the `plugin.toml` path for a given executable, or return
 /// [`DiscoveryError::ManifestNotFound`].
 fn find_manifest(exec_path: &std::path::Path, suffix: &str) -> Result<PathBuf, DiscoveryError> {
     // 1. Neighbor: <exec_dir>/plugin.toml
     if let Some(parent) = exec_path.parent() {
         let neighbor = parent.join("plugin.toml");
-        if neighbor.is_file() {
-            return Ok(neighbor);
+        if let Some(found) = probe_manifest(&neighbor)? {
+            return Ok(found);
         }
 
         // 2. Install-prefix fallback: only when parent dir basename is "bin".
@@ -254,8 +278,8 @@ fn find_manifest(exec_path: &std::path::Path, suffix: &str) -> Result<PathBuf, D
                     .join("plugins")
                     .join(suffix)
                     .join("plugin.toml");
-                if share_path.is_file() {
-                    return Ok(share_path);
+                if let Some(found) = probe_manifest(&share_path)? {
+                    return Ok(found);
                 }
             }
         }
@@ -321,6 +345,7 @@ ontology_version = "0.1.0"
         fs::set_permissions(path, perms).unwrap();
     }
 
+    /// Build an `OsString` representing a `$PATH`-style list from one or more dirs.
     fn path_os(dirs: &[&std::path::Path]) -> std::ffi::OsString {
         std::env::join_paths(dirs).unwrap()
     }
