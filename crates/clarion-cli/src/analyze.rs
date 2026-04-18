@@ -7,7 +7,6 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use clarion_storage::{
@@ -43,47 +42,40 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
     let (writer, handle) = Writer::spawn(db_path, DEFAULT_BATCH_SIZE, DEFAULT_CHANNEL_CAPACITY)
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("spawn writer actor")?;
-    let tx = writer.sender();
     let run_id = Uuid::new_v4().to_string();
-    let now = iso8601_now();
+    let started_at = iso8601_now();
 
-    let (ack_tx, ack_rx) = oneshot::channel();
-    tx.send(WriterCmd::BeginRun {
-        run_id: run_id.clone(),
-        config_json: "{}".into(),
-        started_at: now.clone(),
-        ack: ack_tx,
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("writer actor closed before BeginRun"))?;
-    ack_rx
+    writer
+        .send_wait(|ack| WriterCmd::BeginRun {
+            run_id: run_id.clone(),
+            config_json: "{}".into(),
+            started_at: started_at.clone(),
+            ack,
+        })
         .await
-        .map_err(|_| anyhow::anyhow!("writer actor dropped ack"))?
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("BeginRun")?;
 
-    tracing::info!(
+    tracing::warn!(
         run_id = %run_id,
         "no plugins registered (WP2 will wire this)"
     );
 
-    let (ack_tx, ack_rx) = oneshot::channel();
-    tx.send(WriterCmd::CommitRun {
-        run_id: run_id.clone(),
-        status: RunStatus::SkippedNoPlugins,
-        completed_at: now,
-        stats_json: r#"{"entities_inserted":0}"#.into(),
-        ack: ack_tx,
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("writer actor closed before CommitRun"))?;
-    ack_rx
+    let completed_at = iso8601_now();
+    writer
+        .send_wait(|ack| WriterCmd::CommitRun {
+            run_id: run_id.clone(),
+            status: RunStatus::SkippedNoPlugins,
+            completed_at: completed_at.clone(),
+            stats_json: r#"{"entities_inserted":0}"#.into(),
+            ack,
+        })
         .await
-        .map_err(|_| anyhow::anyhow!("writer actor dropped ack"))?
         .map_err(|e| anyhow::anyhow!("{e}"))
         .context("CommitRun")?;
 
-    drop(tx);
+    // Writer owns the internal sender. Dropping `writer` closes the channel,
+    // which lets the actor's `rx.blocking_recv()` return None and exit.
     drop(writer);
     handle
         .await
