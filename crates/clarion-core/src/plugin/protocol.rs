@@ -35,7 +35,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 // ── JSON-RPC version wrapper ──────────────────────────────────────────────────
 
@@ -94,20 +94,97 @@ pub struct NotificationEnvelope {
 ///
 /// Wire shape (success): `{"jsonrpc":"2.0","result":{...},"id":1}`
 /// Wire shape (error):   `{"jsonrpc":"2.0","error":{...},"id":1}`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// The spec (§5) requires **exactly one** of `result`/`error`. This type
+/// enforces that invariant during deserialisation:
+/// - both present → error (so a misbehaving plugin can't hide an error by
+///   also sending a result).
+/// - neither present → error (so a malformed response doesn't silently
+///   become an empty success).
+///
+/// Serialisation emits only the matching key (`result` or `error`).
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResponseEnvelope {
     pub jsonrpc: JsonRpcVersion,
     pub id: i64,
-    #[serde(flatten)]
     pub payload: ResponsePayload,
 }
 
 /// The result-or-error payload inside a [`ResponseEnvelope`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+///
+/// Serialisation/deserialisation of the enclosing envelope is custom
+/// (see [`ResponseEnvelope`]) — do not add serde attributes here.
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResponsePayload {
     Result(Value),
     Error(ProtocolError),
+}
+
+impl Serialize for ResponseEnvelope {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        // 3 fields: jsonrpc, id, and either "result" or "error".
+        let mut s = serializer.serialize_struct("ResponseEnvelope", 3)?;
+        s.serialize_field("jsonrpc", &self.jsonrpc)?;
+        s.serialize_field("id", &self.id)?;
+        match &self.payload {
+            ResponsePayload::Result(v) => s.serialize_field("result", v)?,
+            ResponsePayload::Error(e) => s.serialize_field("error", e)?,
+        }
+        s.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ResponseEnvelope {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Read into a generic JSON object, then enforce JSON-RPC 2.0 §5
+        // (exactly one of `result`/`error`). Going via `Map<String, Value>`
+        // lets us give clear errors for both the "both present" and "neither
+        // present" cases — `#[serde(flatten)]` over an externally-tagged
+        // enum silently drops the `error` branch when both are present.
+        let mut obj = Map::<String, Value>::deserialize(deserializer)?;
+
+        // Required fields.
+        let jsonrpc_val = obj
+            .remove("jsonrpc")
+            .ok_or_else(|| de::Error::missing_field("jsonrpc"))?;
+        let jsonrpc: JsonRpcVersion =
+            serde_json::from_value(jsonrpc_val).map_err(de::Error::custom)?;
+
+        let id_val = obj
+            .remove("id")
+            .ok_or_else(|| de::Error::missing_field("id"))?;
+        let id: i64 = serde_json::from_value(id_val).map_err(de::Error::custom)?;
+
+        // Enforce exactly-one-of.
+        let result = obj.remove("result");
+        let error = obj.remove("error");
+        let payload = match (result, error) {
+            (Some(_), Some(_)) => {
+                return Err(de::Error::custom(
+                    "response envelope must have exactly one of `result` or `error`, \
+                     but both were present",
+                ));
+            }
+            (None, None) => {
+                return Err(de::Error::custom(
+                    "response envelope must have exactly one of `result` or `error`, \
+                     but neither was present",
+                ));
+            }
+            (Some(v), None) => ResponsePayload::Result(v),
+            (None, Some(e)) => ResponsePayload::Error(
+                serde_json::from_value::<ProtocolError>(e).map_err(de::Error::custom)?,
+            ),
+        };
+
+        Ok(ResponseEnvelope {
+            jsonrpc,
+            id,
+            payload,
+        })
+    }
 }
 
 /// JSON-RPC 2.0 error object.
@@ -150,18 +227,12 @@ pub struct InitializeResult {
 
 /// Notification params for `initialized` (core → plugin).
 ///
-/// Deliberately empty: the notification carries no payload. This struct exists
-/// for serialisation consistency — every envelope's `params` field is a JSON
-/// object, even when empty.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InitializedNotification;
-
-impl InitializedNotification {
-    /// Serialise to `serde_json::Value::Object({})`.
-    pub fn to_value() -> Value {
-        serde_json::json!({})
-    }
-}
+/// Deliberately empty: the notification carries no payload. The empty-braced
+/// form (`struct Foo {}`) is intentional — it serialises to the JSON object
+/// `{}` as JSON-RPC 2.0 §4.2 requires. A unit struct (`struct Foo;`) would
+/// serialise to `null` and be rejected by strict decoders.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InitializedNotification {}
 
 // ── analyze_file ──────────────────────────────────────────────────────────────
 
@@ -189,34 +260,28 @@ pub struct AnalyzeFileResult {
 
 /// Params for `shutdown` (core → plugin).
 ///
-/// Empty by design — the message carries no payload. The struct exists for
-/// serialisation consistency.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ShutdownParams;
+/// Empty by design — the message carries no payload. Empty-braced form is
+/// intentional so the type serialises to JSON `{}` (an object), not `null`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShutdownParams {}
 
 /// Result for `shutdown` (plugin → core).
 ///
 /// JSON-RPC 2.0 requires a non-null response to a request, so we use an empty
-/// result object `{}` rather than `null`. This signals the plugin has cleanly
-/// acknowledged the shutdown request.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ShutdownResult;
+/// result object `{}` rather than `null`. The empty-braced form ensures serde
+/// emits `{}` (object) rather than `null` (which a unit struct would produce).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShutdownResult {}
 
 // ── exit ──────────────────────────────────────────────────────────────────────
 
 /// Notification params for `exit` (core → plugin).
 ///
 /// Deliberately empty: this is a forceful termination signal sent after the
-/// plugin has replied to `shutdown`. No response is expected.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExitNotification;
-
-impl ExitNotification {
-    /// Serialise to `serde_json::Value::Object({})`.
-    pub fn to_value() -> Value {
-        serde_json::json!({})
-    }
-}
+/// plugin has replied to `shutdown`. No response is expected. Empty-braced
+/// form ensures `{}` is emitted on the wire rather than `null`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExitNotification {}
 
 // ── Helpers for building common envelopes ─────────────────────────────────────
 
@@ -396,9 +461,11 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(r, back);
 
-        // initialized notification — serialises to empty object
-        let notif_val = InitializedNotification::to_value();
-        assert_eq!(notif_val, serde_json::json!({}));
+        // initialized notification — round-trips through the derived serde impl
+        let n = InitializedNotification {};
+        let back: InitializedNotification =
+            serde_json::from_str(&serde_json::to_string(&n).unwrap()).unwrap();
+        assert_eq!(n, back);
 
         // analyze_file params
         let p = AnalyzeFileParams {
@@ -417,19 +484,80 @@ mod tests {
         assert_eq!(r, back);
 
         // shutdown params (empty)
-        let p = ShutdownParams;
+        let p = ShutdownParams {};
         let back: ShutdownParams =
             serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(p, back);
 
         // shutdown result (empty)
-        let r = ShutdownResult;
+        let r = ShutdownResult {};
         let back: ShutdownResult =
             serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(r, back);
 
-        // exit notification — serialises to empty object
-        let notif_val = ExitNotification::to_value();
-        assert_eq!(notif_val, serde_json::json!({}));
+        // exit notification — round-trips through the derived serde impl
+        let n = ExitNotification {};
+        let back: ExitNotification =
+            serde_json::from_str(&serde_json::to_string(&n).unwrap()).unwrap();
+        assert_eq!(n, back);
+    }
+
+    // ── C1 regression: unit-like params serialise as `{}`, not `null` ─────────
+
+    #[test]
+    fn proto_07_unit_notifications_serialise_as_empty_object_not_null() {
+        // Every empty-braced param/result struct must serialise to the JSON
+        // object `{}` (JSON-RPC 2.0 §4.2 requires params to be a structured
+        // value; `null` violates the spec and strict Python decoders reject
+        // it).
+        let v = serde_json::to_value(InitializedNotification {}).unwrap();
+        assert_eq!(v, serde_json::json!({}), "InitializedNotification");
+
+        let v = serde_json::to_value(ShutdownParams {}).unwrap();
+        assert_eq!(v, serde_json::json!({}), "ShutdownParams");
+
+        let v = serde_json::to_value(ShutdownResult {}).unwrap();
+        assert_eq!(v, serde_json::json!({}), "ShutdownResult");
+
+        let v = serde_json::to_value(ExitNotification {}).unwrap();
+        assert_eq!(v, serde_json::json!({}), "ExitNotification");
+    }
+
+    // ── C2 regression: exactly-one-of result/error enforced at deserialise ────
+
+    #[test]
+    fn proto_08_response_with_both_result_and_error_rejected() {
+        // A plugin sending both `result` and `error` in the same response is
+        // malformed (JSON-RPC 2.0 §5 requires exactly one). The supervisor
+        // must see a hard error, not a silent drop of the `error` half.
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"ok": true},
+            "error": {"code": -32600, "message": "oops"}
+        });
+        let err = serde_json::from_value::<ResponseEnvelope>(raw).expect_err("must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("both"),
+            "error message should mention `both` fields present; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn proto_08_response_with_neither_result_nor_error_rejected() {
+        // A response with neither `result` nor `error` is structurally invalid.
+        // This used to silently become `ResponsePayload::Result(Null)` via the
+        // flatten-enum approach; now it produces a loud error.
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1
+        });
+        let err = serde_json::from_value::<ResponseEnvelope>(raw).expect_err("must reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("neither"),
+            "error message should mention neither field present; got: {msg}"
+        );
     }
 }
