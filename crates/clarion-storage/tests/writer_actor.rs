@@ -294,3 +294,66 @@ async fn double_begin_run_is_protocol_violation() {
     drop(writer);
     handle.await.unwrap().unwrap();
 }
+
+/// Regression for review finding #8: if the channel closes while a run is
+/// still open (e.g. the Writer is dropped before CommitRun/FailRun is sent),
+/// the actor must update the `runs` row to `status='failed'` rather than
+/// leaving it stuck at `'running'`. Without this, every crashed analyze
+/// accumulates an orphaned row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn channel_close_with_open_run_self_heals_to_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = prepared_db(&dir);
+    let (writer, handle) = Writer::spawn(path.clone(), 50, 256).unwrap();
+    let tx = writer.sender();
+
+    send::<()>(&tx, |ack| WriterCmd::BeginRun {
+        run_id: "run-abandoned".into(),
+        config_json: "{}".into(),
+        started_at: now_iso(),
+        ack,
+    })
+    .await
+    .unwrap();
+
+    send::<()>(&tx, |ack| WriterCmd::InsertEntity {
+        entity: Box::new(make_entity("python:function:demo.hello")),
+        ack,
+    })
+    .await
+    .unwrap();
+
+    // Caller disappears mid-run — no CommitRun / FailRun sent.
+    drop(tx);
+    drop(writer);
+    handle.await.unwrap().unwrap();
+
+    // The run row must have been self-healed to 'failed'. The pending insert
+    // is rolled back.
+    let pool = ReaderPool::open(&path, 1).expect("pool");
+    let (observed_status, observed_reason, entity_count): (String, String, i64) = pool
+        .with_reader(|conn| {
+            let (s, st): (String, String) = conn.query_row(
+                "SELECT status, stats FROM runs WHERE id = 'run-abandoned'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let n: i64 = conn.query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))?;
+            Ok((s, st, n))
+        })
+        .await
+        .expect("reader query");
+
+    assert_eq!(
+        observed_status, "failed",
+        "self-heal must mark abandoned run as failed"
+    );
+    assert!(
+        observed_reason.contains("writer channel closed unexpectedly"),
+        "failure_reason must cite channel close; got stats = {observed_reason}"
+    );
+    assert_eq!(
+        entity_count, 0,
+        "pending insert must be rolled back when channel closes"
+    );
+}

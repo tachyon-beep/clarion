@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use uuid::Uuid;
 
-use clarion_core::{AcceptedEntity, DiscoveredPlugin, HostError, discover};
+use clarion_core::{AcceptedEntity, DiscoveredPlugin, HostError, HostFinding, discover};
 use clarion_storage::{
     DEFAULT_BATCH_SIZE, DEFAULT_CHANNEL_CAPACITY, Writer,
     commands::{EntityRecord, RunStatus, WriterCmd},
@@ -71,6 +71,7 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
     // ── Discover plugins ──────────────────────────────────────────────────────
     let discovery_results = discover();
     let mut plugins: Vec<DiscoveredPlugin> = Vec::new();
+    let mut discovery_errors: Vec<String> = Vec::new();
     for result in discovery_results {
         match result {
             Ok(p) => {
@@ -82,12 +83,47 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                 plugins.push(p);
             }
             Err(e) => {
-                tracing::warn!(error = %e, "skipping plugin: discovery error");
+                let msg = e.to_string();
+                tracing::warn!(error = %msg, "skipping plugin: discovery error");
+                discovery_errors.push(msg);
             }
         }
     }
 
     if plugins.is_empty() {
+        // Distinguish "no plugins installed" (SkippedNoPlugins — expected on a
+        // bare machine) from "plugins present but all failed discovery" (FailRun
+        // — a real configuration error the operator must see). Reporting the
+        // latter as `skipped_no_plugins` hides bugs.
+        if !discovery_errors.is_empty() {
+            let reason = format!(
+                "all {} discovered plugin manifest(s) failed to parse: {}",
+                discovery_errors.len(),
+                discovery_errors.join("; ")
+            );
+            tracing::error!(run_id = %run_id, reason = %reason, "failing run: discovery errors");
+            let completed_at = iso8601_now();
+            writer
+                .send_wait(|ack| WriterCmd::FailRun {
+                    run_id: run_id.clone(),
+                    reason: reason.clone(),
+                    completed_at,
+                    ack,
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+                .context("FailRun(discovery errors)")?;
+
+            drop(writer);
+            handle
+                .await
+                .map_err(|e| anyhow::anyhow!("writer actor panic: {e}"))?
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            println!("analyze complete: run {run_id} failed — {reason}");
+            return Ok(());
+        }
+
         tracing::warn!(run_id = %run_id, "no plugins discovered");
         let completed_at = iso8601_now();
         writer
@@ -180,26 +216,60 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                 break 'plugins;
             }
             Ok(BatchResult { entities, findings }) => {
-                // Log findings (Tier B persistence is future work).
+                // Log findings individually (Tier B persistence is future
+                // work). Logging only the count leaves operators guessing
+                // whether the plugin tripped an ontology check, emitted
+                // malformed JSON, or hit a path-jail violation.
                 if !findings.is_empty() {
                     tracing::warn!(
                         plugin_id = %plugin_id,
                         finding_count = findings.len(),
                         "plugin host collected findings"
                     );
+                    for f in &findings {
+                        tracing::warn!(
+                            plugin_id = %plugin_id,
+                            subcode = %f.subcode,
+                            message = %f.message,
+                            metadata = ?f.metadata,
+                            "plugin host finding",
+                        );
+                    }
                 }
 
                 // Persist entities via writer-actor (async side).
+                //
+                // A writer-actor error here (e.g. unique-key constraint, disk full)
+                // must NOT short-circuit `run()` via `?` — that would bypass the
+                // CommitRun/FailRun block below and leave `runs.status = 'running'`
+                // permanently. Instead we convert the error to a terminal
+                // `RunOutcome::Failed` so the FailRun path marks the run.
                 let count = entities.len() as u64;
+                let mut insert_err: Option<anyhow::Error> = None;
                 for (id_str, record) in entities {
-                    writer
+                    let res = writer
                         .send_wait(|ack| WriterCmd::InsertEntity {
                             entity: Box::new(record),
                             ack,
                         })
                         .await
                         .map_err(|e| anyhow::anyhow!("{e}"))
-                        .with_context(|| format!("InsertEntity for {id_str}"))?;
+                        .with_context(|| format!("InsertEntity for {id_str}"));
+                    if let Err(e) = res {
+                        insert_err = Some(e);
+                        break;
+                    }
+                }
+                if let Some(e) = insert_err {
+                    tracing::error!(
+                        plugin_id = %plugin_id,
+                        error = %e,
+                        "writer-actor rejected InsertEntity; failing run"
+                    );
+                    run_outcome = RunOutcome::Failed {
+                        reason: format!("{e:#}"),
+                    };
+                    break 'plugins;
                 }
                 total_entity_count += count;
                 tracing::info!(plugin_id = %plugin_id, entity_count = count, "plugin complete");
@@ -280,6 +350,12 @@ struct BatchResult {
 ///
 /// All I/O is synchronous — this is designed to run inside `spawn_blocking`.
 /// On unrecoverable error, returns `Err(reason_string)`.
+///
+/// Regardless of success or failure the child process is always reaped: on
+/// the happy path via `host.shutdown()` + `child.wait()`, on the error path
+/// via `child.kill()` + `child.wait()`. `std::process::Child::Drop` does NOT
+/// kill or reap on Unix, so discarding `child` without `wait()` would leak a
+/// zombie into the kernel process table per spawn.
 fn run_plugin_blocking(
     manifest: clarion_core::Manifest,
     project_root: &Path,
@@ -296,30 +372,107 @@ fn run_plugin_blocking(
         other => format!("plugin {plugin_id} spawn/handshake error: {other}"),
     })?;
 
-    let mut collected: Vec<(String, EntityRecord)> = Vec::new();
-
-    for file in files {
-        let entities: Vec<AcceptedEntity> = host
-            .analyze_file(file)
-            .map_err(|e| classify_host_error(plugin_id, e))?;
-
-        for entity in entities {
-            let id_str = entity.id.to_string();
-            let record = map_entity_to_record(&entity, plugin_id);
-            collected.push((id_str, record));
+    let work_result: Result<Vec<(String, EntityRecord)>, String> = (|| {
+        let mut collected: Vec<(String, EntityRecord)> = Vec::new();
+        for file in files {
+            let entities: Vec<AcceptedEntity> = host
+                .analyze_file(file)
+                .map_err(|e| classify_host_error(plugin_id, e))?;
+            for entity in entities {
+                let id_str = entity.id.to_string();
+                let record = map_entity_to_record(&entity, plugin_id);
+                collected.push((id_str, record));
+            }
         }
+        Ok(collected)
+    })();
+
+    // Try a graceful shutdown on the happy path; on error, skip straight to
+    // kill — the plugin's behaviour is already untrusted. `analyze_file`
+    // already issues `shutdown`/`exit` before returning PathEscapeBreaker or
+    // EntityCap errors, so calling `host.shutdown()` again there would write
+    // to a closed pipe; that's why we only call it on Ok.
+    if work_result.is_ok() {
+        if let Err(e) = host.shutdown() {
+            tracing::warn!(
+                plugin_id = %plugin_id,
+                error = %e,
+                "best-effort host shutdown failed; falling back to kill()",
+            );
+            let _ = child.kill();
+        }
+    } else {
+        let _ = child.kill();
     }
 
-    let findings = host.take_findings();
-    let _ = host.shutdown(); // best-effort; don't fail the run on shutdown error
+    let mut findings = host.take_findings();
 
-    // Wait for the child to exit (best-effort).
-    let _ = child.wait();
+    // Reap unconditionally. `Child::Drop` does not wait on Unix.
+    reap_and_classify_exit(&mut child, plugin_id, &mut findings);
 
-    Ok(BatchResult {
-        entities: collected,
-        findings,
-    })
+    match work_result {
+        Ok(collected) => Ok(BatchResult {
+            entities: collected,
+            findings,
+        }),
+        Err(reason) => Err(reason),
+    }
+}
+
+/// Wait on the child, inspect its exit status, and append an OOM finding if
+/// the signal is consistent with `RLIMIT_AS` enforcement (ADR-021 §2d).
+///
+/// Linux kernel behaviour on `RLIMIT_AS` violation varies: typical signatures
+/// are SIGKILL (OOM-killer path) and SIGSEGV (map/allocation failure that the
+/// plugin did not handle). Both are treated as likely memory-limit events.
+/// Other signals or non-zero exit codes get a warn log but no finding — the
+/// cause is ambiguous without more bookkeeping.
+fn reap_and_classify_exit(
+    child: &mut std::process::Child,
+    plugin_id: &str,
+    findings: &mut Vec<HostFinding>,
+) {
+    match child.wait() {
+        Ok(status) if !status.success() => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                if let Some(signal) = status.signal() {
+                    tracing::warn!(
+                        plugin_id = %plugin_id,
+                        signal,
+                        "plugin terminated by signal",
+                    );
+                    // SIGKILL (9) and SIGSEGV (11) are the observed signatures
+                    // of an RLIMIT_AS kill in Sprint-1 testing.
+                    if signal == 9 || signal == 11 {
+                        findings.push(HostFinding::oom_killed(plugin_id, signal));
+                    }
+                } else if let Some(code) = status.code() {
+                    tracing::warn!(
+                        plugin_id = %plugin_id,
+                        code,
+                        "plugin exited non-zero",
+                    );
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                tracing::warn!(
+                    plugin_id = %plugin_id,
+                    "plugin exited non-successfully (exit-status inspection is Unix-only)",
+                );
+            }
+        }
+        Ok(_) => {} // clean exit
+        Err(e) => {
+            tracing::warn!(
+                plugin_id = %plugin_id,
+                error = %e,
+                "failed to wait on plugin child",
+            );
+        }
+    }
 }
 
 /// Map a `HostError` from `analyze_file` to a human-readable fail-run reason.

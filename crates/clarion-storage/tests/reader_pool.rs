@@ -67,10 +67,22 @@ async fn reader_sees_committed_data() {
     assert_eq!(status, "running");
 }
 
+/// Gate for `pool_queues_when_exhausted_and_proceeds_after_release`.
+///
+/// The first reader flips `acquired` once it holds the connection, then waits
+/// on `cv_released` for the main task's release signal. Lets the test
+/// synchronise precisely, without wall-clock guesses about "when has the
+/// first reader probably acquired by now."
+#[derive(Default)]
+struct ReaderPoolGate {
+    acquired: std::sync::Mutex<bool>,
+    released: std::sync::Mutex<bool>,
+    cv_acquired: std::sync::Condvar,
+    cv_released: std::sync::Condvar,
+}
+
 #[tokio::test]
 async fn pool_queues_when_exhausted_and_proceeds_after_release() {
-    use std::sync::Arc;
-    use tokio::sync::Notify;
     use tokio::time::{Duration, timeout};
 
     let dir = tempfile::tempdir().unwrap();
@@ -78,52 +90,88 @@ async fn pool_queues_when_exhausted_and_proceeds_after_release() {
     // max_size = 1 makes the exhaustion scenario trivial to construct.
     let pool = Arc::new(ReaderPool::open(&path, 1).expect("pool"));
 
-    let hold_open = Arc::new(Notify::new());
-    let hold_open_in_task = hold_open.clone();
-    let pool_for_hold = pool.clone();
+    let gate = Arc::new(ReaderPoolGate::default());
 
-    // First reader: acquire and hold until notified.
+    let pool_for_hold = pool.clone();
+    let gate_for_hold = gate.clone();
     let held = tokio::spawn(async move {
         pool_for_hold
             .with_reader(move |conn| {
-                // Run a trivial query so we know the connection was actually acquired.
+                // Prove the connection was actually acquired.
                 let _: i64 = conn.query_row("SELECT 1", [], |row| row.get(0))?;
-                // Block the reader inside the interact() block by busy-spinning
-                // on a sync signal. We cannot `.await` inside interact() (it's
-                // a blocking context), so use a sync waiter: park on a mutex
-                // that the main task will unlock.
-                // Simpler: sleep for a bounded time; the main task must acquire
-                // the second reader before this sleep elapses.
-                std::thread::sleep(Duration::from_millis(300));
+                // Signal the main task that we hold the connection, then park
+                // (sync-wait) until it signals release. `.await` inside
+                // interact() is not permitted — this is a blocking thread.
+                {
+                    let mut a = gate_for_hold.acquired.lock().unwrap();
+                    *a = true;
+                    gate_for_hold.cv_acquired.notify_one();
+                }
+                let mut r = gate_for_hold.released.lock().unwrap();
+                while !*r {
+                    r = gate_for_hold.cv_released.wait(r).unwrap();
+                }
                 Ok::<_, clarion_storage::StorageError>(())
             })
             .await
     });
 
-    // Give the first reader a moment to acquire the connection.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait deterministically for the first reader to acquire the connection.
+    // (A short timeout, but the gate signalling is precise — no wall-clock
+    // guess about scheduling.)
+    let gate_wait = gate.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut a = gate_wait.acquired.lock().unwrap();
+        while !*a {
+            let (guard, _) = gate_wait
+                .cv_acquired
+                .wait_timeout(a, Duration::from_secs(2))
+                .unwrap();
+            a = guard;
+            if *a {
+                break;
+            }
+        }
+        assert!(*a, "first reader failed to acquire within 2s");
+    })
+    .await
+    .unwrap();
 
-    // Second reader: should block until the first releases. With timeout 2s
-    // this proves it eventually proceeds (not immediately erroring, not
-    // blocking forever).
+    // Second reader: should block on the exhausted pool. Spawn it and assert
+    // it is NOT yet finished — if the pool mis-behaved and let two readers
+    // in concurrently, this would flake-pass before; now we catch it.
     let pool_for_wait = pool.clone();
-    let second = timeout(Duration::from_secs(2), async move {
+    let second_handle = tokio::spawn(async move {
         pool_for_wait
             .with_reader(|conn| {
                 let n: i64 = conn.query_row("SELECT 2", [], |row| row.get(0))?;
                 Ok(n)
             })
             .await
-    })
-    .await
-    .expect("second reader should eventually acquire within 2s")
-    .expect("second reader's query should succeed");
+    });
+    // Give the runtime a turn to schedule the second task; if it hasn't
+    // blocked by then, the pool is handing out two concurrent connections.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !second_handle.is_finished(),
+        "second reader must be parked while first holds the only connection"
+    );
 
+    // Release the first reader.
+    {
+        let mut r = gate.released.lock().unwrap();
+        *r = true;
+        gate.cv_released.notify_one();
+    }
+
+    // Both readers must complete promptly.
+    let second = timeout(Duration::from_secs(2), second_handle)
+        .await
+        .expect("second reader should eventually complete within 2s")
+        .expect("second reader join")
+        .expect("second reader's query should succeed");
     assert_eq!(second, 2);
     held.await.unwrap().unwrap();
-    // Keep the unused import quiet.
-    let _ = hold_open_in_task;
-    let _ = hold_open;
 }
 
 #[tokio::test]

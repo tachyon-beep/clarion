@@ -37,8 +37,8 @@ use crate::entity_id::{EntityId, EntityIdError, entity_id};
 use crate::plugin::jail::{JailError, jail_to_string};
 use crate::plugin::limits::{
     BreakerState, CapExceeded, ContentLengthCeiling, DEFAULT_MAX_RSS_MIB, EntityCountCap,
-    FINDING_DISABLED_PATH_ESCAPE, FINDING_ENTITY_CAP, FINDING_PATH_ESCAPE, PathEscapeBreaker,
-    apply_prlimit_as, effective_rss_mib,
+    FINDING_DISABLED_PATH_ESCAPE, FINDING_ENTITY_CAP, FINDING_OOM_KILLED, FINDING_PATH_ESCAPE,
+    PathEscapeBreaker, apply_prlimit_as, effective_rss_mib,
 };
 use crate::plugin::manifest::{Manifest, ManifestError};
 use crate::plugin::protocol::{
@@ -65,6 +65,15 @@ pub const FINDING_ENTITY_ID_MISMATCH: &str = "CLA-INFRA-PLUGIN-ENTITY-ID-MISMATC
 /// Emitted when the manifest contains a capability not supported in v0.1
 /// (ADR-021 §Layer 1).
 pub const FINDING_UNSUPPORTED_CAPABILITY: &str = "CLA-INFRA-MANIFEST-UNSUPPORTED-CAPABILITY";
+
+/// Emitted when a plugin returns an entity whose JSON shape fails to
+/// deserialise into [`RawEntity`] (missing required field, wrong type, etc.).
+///
+/// Structurally invalid entities are dropped rather than failing the run, so
+/// the finding is the only signal the operator gets that the plugin emitted
+/// malformed output. Without this, a plugin bug that silently produces
+/// garbage for a subset of entities looks identical to "no entities found".
+pub const FINDING_MALFORMED_ENTITY: &str = "CLA-INFRA-PLUGIN-MALFORMED-ENTITY";
 
 // ── Wire entity types (Option A) ──────────────────────────────────────────────
 
@@ -236,6 +245,34 @@ impl HostFinding {
         Self {
             subcode: FINDING_UNSUPPORTED_CAPABILITY,
             message: format!("manifest has unsupported capability: {msg}"),
+            metadata,
+        }
+    }
+
+    fn malformed_entity(serde_err: &str) -> Self {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("serde_error".to_owned(), serde_err.to_owned());
+        Self {
+            subcode: FINDING_MALFORMED_ENTITY,
+            message: format!("plugin emitted an entity that failed to deserialise: {serde_err}"),
+            metadata,
+        }
+    }
+
+    /// Emitted by the CLI wrapper once the child has been reaped and its exit
+    /// status indicates a signal consistent with an `RLIMIT_AS` kill (SIGKILL
+    /// or SIGSEGV). Lives on [`HostFinding`] rather than being constructed in
+    /// the CLI so the finding-subcode API is centralised.
+    pub fn oom_killed(plugin_id: &str, signal: i32) -> Self {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("plugin_id".to_owned(), plugin_id.to_owned());
+        metadata.insert("signal".to_owned(), signal.to_string());
+        Self {
+            subcode: FINDING_OOM_KILLED,
+            message: format!(
+                "plugin {plugin_id} killed by signal {signal} \
+                 (likely RLIMIT_AS enforcement per ADR-021 §2d)"
+            ),
             metadata,
         }
     }
@@ -419,7 +456,13 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
             self.findings
                 .push(HostFinding::unsupported_capability(&e.to_string()));
             // Graceful shutdown — plugin is alive but we will not use it.
-            let _ = self.do_shutdown();
+            // Errors are best-effort (the pipe may already be broken).
+            if let Err(se) = self.do_shutdown() {
+                tracing::warn!(
+                    error = %se,
+                    "best-effort shutdown after capability-check failure hit an error",
+                );
+            }
             return Err(HostError::Handshake(e));
         }
 
@@ -481,7 +524,14 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
         for raw_val in entities_raw {
             let raw: RawEntity = match serde_json::from_value(raw_val) {
                 Ok(e) => e,
-                Err(_) => continue, // malformed entity — skip silently
+                Err(e) => {
+                    // Drop the entity, but record the serde error so operators
+                    // can distinguish "plugin returned nothing" from "plugin
+                    // returned garbage that failed to parse."
+                    self.findings
+                        .push(HostFinding::malformed_entity(&e.to_string()));
+                    continue;
+                }
             };
 
             // 1. Ontology check (ADR-022).
@@ -510,30 +560,33 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
                 continue;
             }
 
-            // 3. Jail check (ADR-021 §2a).
+            // 3. Jail check (ADR-021 §2a). Every path-jail failure ticks the
+            //    escape breaker — including missing-file and non-UTF-8 cases.
+            //    A plugin emitting 10k bogus paths must eventually be killed
+            //    regardless of which taxonomy its paths fall into.
             let candidate = Path::new(&raw.source.file_path);
             let jailed = match jail_to_string(&project_root, candidate) {
                 Ok(p) => p,
-                Err(JailError::EscapedRoot { ref offending }) => {
-                    let s = offending.to_string_lossy().into_owned();
-                    self.findings.push(HostFinding::path_escape(&s));
+                Err(jerr) => {
+                    let offender: String = match &jerr {
+                        JailError::EscapedRoot { offending }
+                        | JailError::NonUtf8Path { offending } => {
+                            offending.to_string_lossy().into_owned()
+                        }
+                        JailError::Io(_) => raw.source.file_path.clone(),
+                    };
+                    self.findings.push(HostFinding::path_escape(&offender));
                     let state = self.path_breaker.record_escape();
                     if state == BreakerState::Tripped {
                         self.findings.push(HostFinding::disabled_path_escape());
-                        let _ = self.do_shutdown();
+                        if let Err(e) = self.do_shutdown() {
+                            tracing::warn!(
+                                error = %e,
+                                "best-effort shutdown after path-escape breaker failed",
+                            );
+                        }
                         return Err(HostError::PathEscapeBreakerTripped);
                     }
-                    continue;
-                }
-                Err(JailError::Io(_)) => {
-                    // File does not exist — drop entity, don't kill.
-                    self.findings
-                        .push(HostFinding::path_escape(&raw.source.file_path));
-                    continue;
-                }
-                Err(JailError::NonUtf8Path { ref offending }) => {
-                    let s = offending.to_string_lossy().into_owned();
-                    self.findings.push(HostFinding::path_escape(&s));
                     continue;
                 }
             };
@@ -544,7 +597,12 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
                     e.cap,
                     e.would_reach,
                 ));
-                let _ = self.do_shutdown();
+                if let Err(se) = self.do_shutdown() {
+                    tracing::warn!(
+                        error = %se,
+                        "best-effort shutdown after entity-cap exceeded hit an error",
+                    );
+                }
                 return Err(HostError::EntityCapExceeded(e));
             }
 
@@ -579,6 +637,33 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
     /// Drain the accumulated findings, leaving the internal list empty.
     pub fn take_findings(&mut self) -> Vec<HostFinding> {
         std::mem::take(&mut self.findings)
+    }
+
+    // ── Test-only accessors ───────────────────────────────────────────────────
+    //
+    // These route inline-test access through stable method signatures so the
+    // private field names (`reader`, `writer`, `next_request_id`) can be
+    // renamed without churning every test site. The methods are gated behind
+    // `#[cfg(test)]` and are not part of the public API.
+
+    #[cfg(test)]
+    pub(crate) fn reader_mut_test(&mut self) -> &mut R {
+        &mut self.reader
+    }
+
+    #[cfg(test)]
+    pub(crate) fn writer_bytes_test(&self) -> &W {
+        &self.writer
+    }
+
+    #[cfg(test)]
+    pub(crate) fn next_request_id_test(&self) -> i64 {
+        self.next_request_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_next_request_id_test(&mut self, id: i64) {
+        self.next_request_id = id;
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
@@ -741,7 +826,7 @@ ontology_version = "0.1.0"
         let writer: Vec<u8> = Vec::new();
         let mut host =
             PluginHost::connect(manifest, project_dir.path(), reader, writer).expect("connect");
-        host.next_request_id = 1; // match the id we pre-sent (id=1)
+        host.set_next_request_id_test(1); // match the id we pre-sent (id=1)
 
         // Step 4: run handshake(). It reads the initialize response, validates
         // the manifest, then writes [initialize_request | initialized_notification]
@@ -769,7 +854,7 @@ ontology_version = "0.1.0"
 
         // host.writer = [initialize_req_frame | initialized_notification_frame]
         // Forward only the initialized notification.
-        let initialized_bytes = host.writer[init_req_framed_len..].to_vec();
+        let initialized_bytes = host.writer_bytes_test()[init_req_framed_len..].to_vec();
         mock.stdin().extend_from_slice(&initialized_bytes);
         mock.tick().expect("mock tick for initialized");
 
@@ -832,7 +917,7 @@ ontology_version = "0.1.0"
         let writer: Vec<u8> = Vec::new();
         let mut host =
             PluginHost::connect(manifest, project_dir.path(), reader, writer).expect("connect");
-        host.next_request_id = 1;
+        host.set_next_request_id_test(1);
 
         let err = host
             .handshake()
@@ -856,7 +941,7 @@ ontology_version = "0.1.0"
 
         // Verify that no analyze_file was sent: host writer should not contain
         // "analyze_file". (Writer holds bytes the host sent after the reader was built.)
-        let written = String::from_utf8_lossy(&host.writer);
+        let written = String::from_utf8_lossy(host.writer_bytes_test());
         assert!(
             !written.contains("analyze_file"),
             "analyze_file must not be sent after capability refusal; writer contained: {written}"
@@ -884,7 +969,7 @@ ontology_version = "0.1.0"
                 &AnalyzeFileParams {
                     file_path: sample.to_string_lossy().into_owned(),
                 },
-                host.next_request_id,
+                host.next_request_id_test(),
             );
             let body = serde_json::to_vec(&req).unwrap();
             write_frame(mock.stdin(), &Frame { body }).unwrap();
@@ -898,11 +983,14 @@ ontology_version = "0.1.0"
             [usize::try_from(start).unwrap()..usize::try_from(end).unwrap()]
             .to_vec();
         mock.stdout().set_position(end);
-        let pos_before = host.reader.position();
-        let old_end = host.reader.get_ref().len() as u64;
-        host.reader.get_mut().extend_from_slice(&new_bytes);
-        if pos_before == old_end {
-            host.reader.set_position(old_end);
+        {
+            let reader = host.reader_mut_test();
+            let pos_before = reader.position();
+            let old_end = reader.get_ref().len() as u64;
+            reader.get_mut().extend_from_slice(&new_bytes);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
         }
 
         let result = host
@@ -944,13 +1032,13 @@ ontology_version = "0.1.0"
                 &AnalyzeFileParams {
                     file_path: sample.to_string_lossy().into_owned(),
                 },
-                host.next_request_id,
+                host.next_request_id_test(),
             );
             let body = serde_json::to_vec(&req).unwrap();
             write_frame(mock.stdin(), &Frame { body }).unwrap();
             mock.tick().expect("tick analyze_file");
         }
-        append_mock_output_to_host_reader(&mut mock, &mut host.reader);
+        append_mock_output_to_host_reader(&mut mock, host.reader_mut_test());
 
         let result = host
             .analyze_file(&sample)
@@ -985,13 +1073,13 @@ ontology_version = "0.1.0"
                 &AnalyzeFileParams {
                     file_path: sample.to_string_lossy().into_owned(),
                 },
-                host.next_request_id,
+                host.next_request_id_test(),
             );
             let body = serde_json::to_vec(&req).unwrap();
             write_frame(mock.stdin(), &Frame { body }).unwrap();
             mock.tick().expect("tick analyze_file");
         }
-        append_mock_output_to_host_reader(&mut mock, &mut host.reader);
+        append_mock_output_to_host_reader(&mut mock, host.reader_mut_test());
 
         let result = host
             .analyze_file(&sample)
@@ -1032,7 +1120,7 @@ ontology_version = "0.1.0"
                 &AnalyzeFileParams {
                     file_path: sample.to_string_lossy().into_owned(),
                 },
-                host.next_request_id,
+                host.next_request_id_test(),
             );
             let body = serde_json::to_vec(&req).unwrap();
             write_frame(mock.stdin(), &Frame { body }).unwrap();
@@ -1042,7 +1130,7 @@ ontology_version = "0.1.0"
 
         // Also pre-generate the shutdown response that do_shutdown() will need.
         // do_shutdown() uses id = next_request_id + 1 (after analyze_file uses one id).
-        let shutdown_id = host.next_request_id + 1;
+        let shutdown_id = host.next_request_id_test() + 1;
         {
             let req =
                 crate::plugin::protocol::make_request("shutdown", &ShutdownParams {}, shutdown_id);
@@ -1055,11 +1143,14 @@ ontology_version = "0.1.0"
         // Load both into the host reader in order: analyze_file response, then shutdown response.
         let mut all_bytes = analyze_response_bytes;
         all_bytes.extend_from_slice(&shutdown_response_bytes);
-        let old_end = host.reader.get_ref().len() as u64;
-        let pos_before = host.reader.position();
-        host.reader.get_mut().extend_from_slice(&all_bytes);
-        if pos_before == old_end {
-            host.reader.set_position(old_end);
+        {
+            let reader = host.reader_mut_test();
+            let old_end = reader.get_ref().len() as u64;
+            let pos_before = reader.position();
+            reader.get_mut().extend_from_slice(&all_bytes);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
         }
 
         let err = host
@@ -1104,13 +1195,13 @@ ontology_version = "0.1.0"
                 &AnalyzeFileParams {
                     file_path: entity_file.to_string_lossy().into_owned(),
                 },
-                host.next_request_id,
+                host.next_request_id_test(),
             );
             let body = serde_json::to_vec(&req).unwrap();
             write_frame(mock.stdin(), &Frame { body }).unwrap();
             mock.tick().expect("tick analyze_file");
         }
-        append_mock_output_to_host_reader(&mut mock, &mut host.reader);
+        append_mock_output_to_host_reader(&mut mock, host.reader_mut_test());
 
         let result = host
             .analyze_file(&entity_file)

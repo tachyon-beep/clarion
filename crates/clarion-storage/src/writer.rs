@@ -162,9 +162,28 @@ fn run_actor(
             }
         }
     }
-    // Channel closed. Best-effort flush.
+    // Channel closed. Best-effort cleanup.
+    //
+    // Two hazards to cover: an open entity transaction must be rolled back,
+    // and — if a run was in progress — its `runs.status` row must not be
+    // left permanently as `'running'`. We self-heal both. This path is
+    // reached when the Writer handle is dropped mid-run; once the normal
+    // CommitRun / FailRun flows are used, current_run is None here.
     if state.in_tx {
         let _ = conn.execute_batch("ROLLBACK");
+        state.in_tx = false;
+    }
+    if let Some(run_id) = state.current_run.take() {
+        let stats_json =
+            serde_json::json!({ "failure_reason": "writer channel closed unexpectedly" })
+                .to_string();
+        let _ = conn.execute(
+            "UPDATE runs SET status = 'failed', \
+                completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                stats = ?1 \
+              WHERE id = ?2",
+            params![stats_json, run_id],
+        );
     }
 }
 
@@ -301,15 +320,26 @@ fn commit_run(
     stats_json: &str,
     commits_observed: &AtomicUsize,
 ) -> Result<()> {
+    // The run-row UPDATE and the final entity COMMIT must be atomic, otherwise
+    // a crash or SQL error between them would leave entities durable but
+    // `runs.status = 'running'` — indistinguishable from an in-progress run.
     if state.in_tx {
+        // An entity batch is open: fold the UPDATE into it, then commit once.
+        conn.execute(
+            "UPDATE runs SET status = ?1, completed_at = ?2, stats = ?3 WHERE id = ?4",
+            params![status.as_str(), completed_at, stats_json, run_id],
+        )?;
         state.in_tx = false;
         conn.execute_batch("COMMIT")?;
         commits_observed.fetch_add(1, Ordering::Relaxed);
+    } else {
+        // No entity batch open (e.g. SkippedNoPlugins path). A single-statement
+        // UPDATE is atomic under SQLite's implicit transaction.
+        conn.execute(
+            "UPDATE runs SET status = ?1, completed_at = ?2, stats = ?3 WHERE id = ?4",
+            params![status.as_str(), completed_at, stats_json, run_id],
+        )?;
     }
-    conn.execute(
-        "UPDATE runs SET status = ?1, completed_at = ?2, stats = ?3 WHERE id = ?4",
-        params![status.as_str(), completed_at, stats_json, run_id],
-    )?;
     state.current_run = None;
     state.inserts_in_batch = 0;
     Ok(())
