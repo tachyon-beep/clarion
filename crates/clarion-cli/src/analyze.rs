@@ -690,16 +690,38 @@ const SKIP_DIRS: &[&str] = &[
 /// Uses `std::fs::read_dir` recursively. No `walkdir` dependency.
 /// Symlinks are skipped (path-jail concerns for Sprint 1).
 /// P4 observation: this does not respect `.gitignore`.
+///
+/// Per-entry I/O errors (a dirent we couldn't stat, a file whose
+/// `file_type()` probe failed) are logged at `warn` level and counted.
+/// When the walk completes with non-zero skips, a summary is logged so
+/// the operator can see that the file list is incomplete — silently
+/// dropping those entries would mask the same "incomplete analysis"
+/// class that the WP1 `read_applied_versions` `.ok()` pattern did.
 fn collect_source_files(
     root: &Path,
     wanted_extensions: &BTreeSet<String>,
 ) -> io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
-    walk_dir(root, &mut out, wanted_extensions)?;
+    let mut skipped: u64 = 0;
+    walk_dir(root, &mut out, &mut skipped, wanted_extensions)?;
+    if skipped > 0 {
+        tracing::warn!(
+            skipped = skipped,
+            root = %root.display(),
+            "source walk skipped {skipped} unreadable entr{suffix}; analysis is \
+             incomplete for those paths",
+            suffix = if skipped == 1 { "y" } else { "ies" },
+        );
+    }
     Ok(out)
 }
 
-fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>, wanted: &BTreeSet<String>) -> io::Result<()> {
+fn walk_dir(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    skipped: &mut u64,
+    wanted: &BTreeSet<String>,
+) -> io::Result<()> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Ok(()),
@@ -707,9 +729,29 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>, wanted: &BTreeSet<String>) -> io
     };
 
     for entry_result in entries {
-        let Ok(entry) = entry_result else { continue };
-        let Ok(file_type) = entry.file_type() else {
-            continue;
+        let entry = match entry_result {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    dir = %dir.display(),
+                    "source walk: skipping unreadable directory entry",
+                );
+                *skipped += 1;
+                continue;
+            }
+        };
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    path = %entry.path().display(),
+                    "source walk: skipping entry whose file_type() probe failed",
+                );
+                *skipped += 1;
+                continue;
+            }
         };
 
         // Skip symlinks (path-jail concerns).
@@ -726,7 +768,7 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>, wanted: &BTreeSet<String>) -> io
             if SKIP_DIRS.iter().any(|skip| *skip == name_str.as_ref()) {
                 continue;
             }
-            walk_dir(&path, out, wanted)?;
+            walk_dir(&path, out, skipped, wanted)?;
         } else if file_type.is_file() {
             // Check extension (case-insensitive compare; `wanted` is already lowercase).
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
