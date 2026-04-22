@@ -344,3 +344,153 @@ ontology_version = "0.1.0"
         "surviving entity must be from the fixture plugin; got {entity_plugin_id:?}"
     );
 }
+
+// ── E2E: crash-loop breaker trip skips remaining plugins ─────────────────────
+//
+// A.2.7 signoff requires proof that the crash-loop breaker trips after the
+// configured number of crashes. `breaker_06` exercises the breaker against
+// `MockPlugin::new_crashing` directly, without touching the `analyze.rs`
+// wiring added in commit a1cc3be. This test drives four broken plugins and
+// a fixture through the CLI end-to-end: the breaker must trip on the fourth
+// crash (threshold `>3`, per ADR-002 + UQ-WP2-10), emit
+// FINDING_DISABLED_CRASH_LOOP, and skip the fixture plugin that would
+// otherwise have succeeded.
+//
+// Regression for clarion-581bcfa0e5.
+#[test]
+fn wp2_crash_loop_breaker_trips_and_skips_remaining_plugins() {
+    // 1. Build four broken plugin dirs, each symlinking to /bin/true.
+    //    `/bin/true` succeeds immediately without reading stdin, so the
+    //    handshake read returns EOF → transport error → plugin crash.
+    //    Each has a unique plugin_id, extension, and rule_id_prefix so the
+    //    manifests parse as distinct plugins.
+    let mut broken_dirs: Vec<TempDir> = Vec::new();
+    for i in 0..4u8 {
+        let dir = TempDir::new().expect("create broken plugin dir");
+        let suffix = format!("broken{i}");
+        let binary = dir.path().join(format!("clarion-plugin-{suffix}"));
+        std::os::unix::fs::symlink("/bin/true", &binary).expect("symlink /bin/true");
+
+        let manifest = format!(
+            r#"[plugin]
+name = "clarion-plugin-{suffix}"
+plugin_id = "{suffix}"
+version = "0.1.0"
+protocol_version = "1.0"
+executable = "clarion-plugin-{suffix}"
+language = "{suffix}"
+extensions = ["b{i}"]
+
+[capabilities.runtime]
+expected_max_rss_mb = 256
+expected_entities_per_file = 100
+wardline_aware = false
+reads_outside_project_root = false
+
+[ontology]
+entity_kinds = ["widget"]
+edge_kinds = []
+rule_id_prefix = "CLA-{PREFIX}-"
+ontology_version = "0.1.0"
+"#,
+            PREFIX = suffix.to_uppercase(),
+        );
+        fs::write(dir.path().join("plugin.toml"), manifest).expect("write broken manifest");
+        broken_dirs.push(dir);
+    }
+
+    // 2. Fixture plugin dir — placed LAST in PATH so discovery yields it
+    //    AFTER the four broken plugins. Once the breaker trips on the
+    //    fourth crash, the analyze loop `break`s and the fixture plugin
+    //    must not run.
+    let fixture_bin = fixture_binary_path();
+    let fixture_dir = setup_plugin_dir(&fixture_bin);
+
+    // 3. Project with one matching file per plugin extension. The fixture
+    //    input MUST be present — its absence would skip the fixture plugin
+    //    via the "no files match" path at analyze.rs ~208, confounding the
+    //    "skipped by breaker" assertion.
+    let project_dir = TempDir::new().expect("create project tempdir");
+    clarion_bin()
+        .args(["install", "--path"])
+        .arg(project_dir.path())
+        .assert()
+        .success();
+    for i in 0..4u8 {
+        fs::write(project_dir.path().join(format!("demo.b{i}")), b"x\n")
+            .expect("write broken input");
+    }
+    fs::write(
+        project_dir.path().join("demo.mt"),
+        b"widget demo.sample {}\n",
+    )
+    .expect("write fixture input");
+
+    // 4. PATH — broken dirs first (in order), fixture last. Discovery
+    //    iterates PATH entries in order (see discover_on_path); within a
+    //    directory the plugin name is distinct per dir, so no shadowing.
+    let mut parts: Vec<PathBuf> = broken_dirs.iter().map(|d| d.path().to_path_buf()).collect();
+    parts.push(fixture_dir.path().to_path_buf());
+    let new_path = env::join_paths(parts).expect("join_paths");
+
+    // 5. analyze must fail (exit 1) — plugins crashed.
+    let out = clarion_bin()
+        .args(["analyze"])
+        .arg(project_dir.path())
+        .env("PATH", &new_path)
+        .assert()
+        .failure();
+    // `tracing_subscriber::fmt::init()` writes events to STDOUT (not
+    // stderr). `anyhow::Error` propagated by `main()` via `?` is what hits
+    // stderr. So we check stdout for the tracing log line and stderr for
+    // the process-level error.
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+
+    // 6. The breaker-tripped tracing line must appear in stdout. This
+    //    proves analyze.rs:240 reached CrashLoopState::Tripped — the
+    //    wiring that breaker_06's mock-only test does not cover.
+    assert!(
+        stdout.contains("crash-loop breaker tripped"),
+        "breaker-tripped log line missing from stdout.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("CLA-INFRA-PLUGIN-DISABLED-CRASH-LOOP"),
+        "FINDING_DISABLED_CRASH_LOOP subcode missing from stdout.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // 7. Fixture plugin must NOT have produced an entity — the break
+    //    statement at analyze.rs ~247 must have fired before it ran.
+    let conn = Connection::open(project_dir.path().join(".clarion/clarion.db")).unwrap();
+    let entity_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
+        .expect("query entities count");
+    assert_eq!(
+        entity_count, 0,
+        "fixture plugin must be skipped after breaker trips; got {entity_count} entities"
+    );
+
+    // 8. Run row must be marked failed with a reason naming the crashed
+    //    plugins.
+    let (run_status, run_stats_json): (String, String) = conn
+        .query_row("SELECT status, stats FROM runs LIMIT 1", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("query runs");
+    assert_eq!(run_status, "failed");
+    let parsed_stats: serde_json::Value =
+        serde_json::from_str(&run_stats_json).expect("stats JSON");
+    let failure_reason = parsed_stats["failure_reason"]
+        .as_str()
+        .expect("failure_reason string");
+    // At least 4 plugins crashed (the fourth triggered the trip, so the
+    // breaker-tripped branch `break`s out of the loop before a fifth could
+    // record).
+    let crash_plugin_mentions = (0..4u8)
+        .filter(|i| failure_reason.contains(&format!("broken{i}")))
+        .count();
+    assert_eq!(
+        crash_plugin_mentions, 4,
+        "failure_reason must name all 4 crashed plugins; got {failure_reason:?}",
+    );
+}
