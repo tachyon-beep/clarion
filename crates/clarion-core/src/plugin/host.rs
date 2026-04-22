@@ -75,6 +75,27 @@ pub const FINDING_UNSUPPORTED_CAPABILITY: &str = "CLA-INFRA-MANIFEST-UNSUPPORTED
 /// garbage for a subset of entities looks identical to "no entities found".
 pub const FINDING_MALFORMED_ENTITY: &str = "CLA-INFRA-PLUGIN-MALFORMED-ENTITY";
 
+/// Emitted when a plugin returns an entity with a string field longer than
+/// [`MAX_ENTITY_FIELD_BYTES`]. Entity is dropped; plugin is not killed.
+///
+/// Without this bound, a plugin could emit up to [`crate::plugin::limits::EntityCountCap`]
+/// entities each carrying multi-MB `qualified_name`/`kind`/`id`/`file_path` strings.
+/// The identity check at `host.rs` duplicates `qualified_name` through `format!()`,
+/// so the memory cost is ≥2× the incoming string per offending entity, making
+/// this a RAM-amplification vector even under the 8 MiB Content-Length ceiling
+/// (which bounds a single frame, not the run-cumulative total).
+pub const FINDING_ENTITY_FIELD_OVERSIZE: &str = "CLA-INFRA-PLUGIN-ENTITY-FIELD-OVERSIZE";
+
+/// Per-string length cap applied to [`RawEntity::id`], [`RawEntity::kind`],
+/// [`RawEntity::qualified_name`], and [`RawSource::file_path`].
+///
+/// 4 KiB is well above any legitimate identifier or path in a real codebase
+/// (the Linux `PATH_MAX` is 4096; Python fully-qualified names exceeding 1 KiB
+/// are absent from elspeth's 425k LOC baseline). The cap is a trust-boundary
+/// check, not a style constraint — pick a value that rejects `DoS` payloads
+/// without false-positing on pathological-but-legitimate inputs.
+pub const MAX_ENTITY_FIELD_BYTES: usize = 4 * 1024;
+
 // ── Wire entity types (Option A) ──────────────────────────────────────────────
 
 /// Raw entity as received from the plugin wire.
@@ -104,6 +125,26 @@ pub struct RawSource {
     /// Extra source fields — accepted without interpretation.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Return `Some((field_name, actual_len))` for the first field of `raw` that
+/// exceeds [`MAX_ENTITY_FIELD_BYTES`]; `None` if every field is in-bounds.
+///
+/// Fields are checked in a stable order so the finding reports the first
+/// offender deterministically for the same input. Order mirrors the wire
+/// layout: `id` → `kind` → `qualified_name` → `source.file_path`.
+fn oversize_field(raw: &RawEntity) -> Option<(&'static str, usize)> {
+    for (name, len) in [
+        ("id", raw.id.len()),
+        ("kind", raw.kind.len()),
+        ("qualified_name", raw.qualified_name.len()),
+        ("source.file_path", raw.source.file_path.len()),
+    ] {
+        if len > MAX_ENTITY_FIELD_BYTES {
+            return Some((name, len));
+        }
+    }
+    None
 }
 
 /// An entity that has passed all validation checks.
@@ -255,6 +296,20 @@ impl HostFinding {
         Self {
             subcode: FINDING_MALFORMED_ENTITY,
             message: format!("plugin emitted an entity that failed to deserialise: {serde_err}"),
+            metadata,
+        }
+    }
+
+    fn entity_field_oversize(field: &'static str, actual_bytes: usize) -> Self {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("field".to_owned(), field.to_owned());
+        metadata.insert("actual_bytes".to_owned(), actual_bytes.to_string());
+        metadata.insert("limit_bytes".to_owned(), MAX_ENTITY_FIELD_BYTES.to_string());
+        Self {
+            subcode: FINDING_ENTITY_FIELD_OVERSIZE,
+            message: format!(
+                "entity field {field:?} is {actual_bytes} bytes, over the {MAX_ENTITY_FIELD_BYTES}-byte limit"
+            ),
             metadata,
         }
     }
@@ -533,6 +588,19 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
                     continue;
                 }
             };
+
+            // 0. Field-size check. Runs before the identity-check `format!()`
+            //    that would otherwise duplicate an unbounded qualified_name.
+            //    Scope is the four fields the host subsequently reads: `id`,
+            //    `kind`, `qualified_name`, `source.file_path`. Oversize in any
+            //    of the four drops the entity without killing the plugin.
+            //    `raw.extra` / `raw.source.extra` are also unbounded but flow
+            //    only into `properties_json` downstream (WP2 review-2 P2).
+            if let Some((field, len)) = oversize_field(&raw) {
+                self.findings
+                    .push(HostFinding::entity_field_oversize(field, len));
+                continue;
+            }
 
             // 1. Ontology check (ADR-022).
             if !declared_kinds.contains(&raw.kind) {
@@ -1220,6 +1288,144 @@ ontology_version = "0.1.0"
         assert!(
             findings.is_empty(),
             "no findings expected on happy path; got: {findings:?}"
+        );
+    }
+
+    // ── T8: oversize-field drop-not-kill ─────────────────────────────────────
+
+    /// T8 — oversize-field enforcement: a plugin emits one entity whose
+    /// `qualified_name` exceeds [`MAX_ENTITY_FIELD_BYTES`]. The host drops it
+    /// before the identity check's `format!()` would allocate a duplicate,
+    /// emits `CLA-INFRA-PLUGIN-ENTITY-FIELD-OVERSIZE`, and the plugin stays
+    /// alive (the cap is per-entity; one offender is not a kill trigger).
+    ///
+    /// Verifies the `DoS` amplification fix from review-2. Builds the
+    /// `analyze_file` response frame directly rather than adding a new
+    /// `MockBehaviour` variant — the mock taxonomy is already wide.
+    #[test]
+    fn t8_oversize_qualified_name_is_dropped_with_finding() {
+        let manifest = compliant_manifest(); // entity_kinds = ["function"]
+        let mut mock = MockPlugin::new_compliant();
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        let sample = project_dir.path().join("sample.mock");
+        std::fs::write(&sample, b"").unwrap();
+
+        // Craft a response frame with qualified_name = MAX + 1 bytes. Build
+        // the entity JSON directly so we don't depend on mock behaviour.
+        let huge_name = "a".repeat(MAX_ENTITY_FIELD_BYTES + 1);
+        let response_id = host.next_request_id_test();
+        let response_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": response_id,
+            "result": {
+                "entities": [{
+                    // `id` is short and valid, so the identity check would
+                    // normally pass. The oversize field is `qualified_name`,
+                    // which is what the review flagged as the format!()
+                    // amplification vector.
+                    "id": "mock:function:placeholder",
+                    "kind": "function",
+                    "qualified_name": huge_name,
+                    "source": { "file_path": sample.to_string_lossy().into_owned() }
+                }]
+            }
+        });
+        let body = serde_json::to_vec(&response_json).unwrap();
+
+        // Append the response frame to the host's reader.
+        {
+            let reader = host.reader_mut_test();
+            let pos_before = reader.position();
+            let old_end = reader.get_ref().len() as u64;
+            let mut framed: Vec<u8> = Vec::new();
+            write_frame(&mut framed, &Frame { body }).unwrap();
+            reader.get_mut().extend_from_slice(&framed);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
+        }
+
+        let result = host
+            .analyze_file(&sample)
+            .expect("oversize-field entity must not error the run");
+
+        assert!(
+            result.is_empty(),
+            "oversize-field entity must be dropped; got {} accepted",
+            result.len()
+        );
+
+        let findings = host.take_findings();
+        let offense = findings
+            .iter()
+            .find(|f| f.subcode == FINDING_ENTITY_FIELD_OVERSIZE)
+            .unwrap_or_else(|| {
+                panic!("must have CLA-INFRA-PLUGIN-ENTITY-FIELD-OVERSIZE; got: {findings:?}")
+            });
+        assert_eq!(
+            offense.metadata.get("field").map(String::as_str),
+            Some("qualified_name"),
+            "field metadata must pinpoint qualified_name; got: {:?}",
+            offense.metadata
+        );
+
+        // Entity cap must not have been charged for the dropped entity —
+        // the check is structural (no kill), not a cap trip.
+        assert!(
+            !findings.iter().any(|f| f.subcode == FINDING_ENTITY_CAP),
+            "oversize drop must not trip the entity cap; got: {findings:?}"
+        );
+    }
+
+    /// T8b — sibling test: oversize `source.file_path` is also caught.
+    /// Guards against a future refactor that forgets to cover all four
+    /// bounded fields.
+    #[test]
+    fn t8b_oversize_file_path_is_dropped_with_finding() {
+        let manifest = compliant_manifest();
+        let mut mock = MockPlugin::new_compliant();
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        let sample = project_dir.path().join("sample.mock");
+        std::fs::write(&sample, b"").unwrap();
+
+        let huge_path = "/".to_owned() + &"a".repeat(MAX_ENTITY_FIELD_BYTES);
+        let response_id = host.next_request_id_test();
+        let response_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": response_id,
+            "result": {
+                "entities": [{
+                    "id": "mock:function:stub",
+                    "kind": "function",
+                    "qualified_name": "stub",
+                    "source": { "file_path": huge_path }
+                }]
+            }
+        });
+        let body = serde_json::to_vec(&response_json).unwrap();
+        {
+            let reader = host.reader_mut_test();
+            let pos_before = reader.position();
+            let old_end = reader.get_ref().len() as u64;
+            let mut framed: Vec<u8> = Vec::new();
+            write_frame(&mut framed, &Frame { body }).unwrap();
+            reader.get_mut().extend_from_slice(&framed);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
+        }
+
+        host.analyze_file(&sample).expect("must not error");
+        let findings = host.take_findings();
+        let offense = findings
+            .iter()
+            .find(|f| f.subcode == FINDING_ENTITY_FIELD_OVERSIZE)
+            .unwrap_or_else(|| panic!("expected oversize finding; got {findings:?}"));
+        assert_eq!(
+            offense.metadata.get("field").map(String::as_str),
+            Some("source.file_path"),
         );
     }
 
