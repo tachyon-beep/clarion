@@ -223,11 +223,21 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
         let pid_clone = plugin_id.clone();
         let files_clone = plugin_files.clone();
 
-        let spawn_result = tokio::task::spawn_blocking(move || {
-            run_plugin_blocking(manifest, &project_root_clone, &pid_clone, &files_clone)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("plugin task panicked: {e}"))?;
+        // A JoinError here means the blocking task panicked (OOM, stack
+        // overflow, internal unwrap, abort — anything that unwinds past the
+        // top of `run_plugin_blocking`). Earlier revisions `?`-propagated
+        // the JoinError out of `run()`, which bypassed the
+        // CommitRun/FailRun block and left `runs.status = 'running'`
+        // permanently. Treat the panic as a crash reason: it flows into the
+        // existing crash-recording path below, ticks the crash-loop breaker,
+        // and resolves the run via SoftFailed → CommitRun(Failed) with exit 1.
+        let spawn_result: Result<BatchResult, String> = handle_plugin_task_join_result(
+            tokio::task::spawn_blocking(move || {
+                run_plugin_blocking(manifest, &project_root_clone, &pid_clone, &files_clone)
+            })
+            .await,
+            &plugin_id,
+        );
 
         match spawn_result {
             Err(reason) => {
@@ -424,6 +434,34 @@ enum RunOutcome {
     Completed,
     SoftFailed { reason: String },
     HardFailed { reason: String },
+}
+
+// ── JoinError handling ────────────────────────────────────────────────────────
+
+/// Convert a `spawn_blocking` join result into the plugin-crash-shaped
+/// `Result<BatchResult, String>` the caller already knows how to handle.
+///
+/// The `Err(JoinError)` arm is the load-bearing one: a panic inside
+/// `run_plugin_blocking` would otherwise `?`-propagate past the run-outcome
+/// machinery and leave `runs.status = 'running'` forever. By normalising the
+/// panic into a crash reason string, it feeds the existing crash-recording
+/// path (ticks the crash-loop breaker, resolves to `SoftFailed` if no writer
+/// error occurred).
+fn handle_plugin_task_join_result(
+    result: Result<Result<BatchResult, String>, tokio::task::JoinError>,
+    plugin_id: &str,
+) -> Result<BatchResult, String> {
+    match result {
+        Ok(inner) => inner,
+        Err(join_err) => {
+            tracing::error!(
+                plugin_id = %plugin_id,
+                error = %join_err,
+                "plugin task panicked; recording as crash",
+            );
+            Err(format!("plugin task for {plugin_id} panicked: {join_err}"))
+        }
+    }
 }
 
 // ── Blocking plugin worker ────────────────────────────────────────────────────
@@ -751,4 +789,66 @@ fn civil_from_unix_secs(mut secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let y_i64 = if mo <= 2 { y_shifted + 1 } else { y_shifted };
     let y = u32::try_from(y_i64).expect("year fits in u32 (post-1970)");
     (y, mo, da, h, mi, se)
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── handle_plugin_task_join_result ────────────────────────────────────────
+    //
+    // Covers the JoinError-bypass regression filed as clarion-cf17e4e779. The
+    // production path is a `spawn_blocking`-wrapped call to
+    // `run_plugin_blocking`; if the task panics, `spawn_blocking` yields
+    // `Err(JoinError)`. Earlier code `?`-propagated that error out of `run()`,
+    // bypassing the CommitRun/FailRun block and leaving `runs.status =
+    // 'running'`. The helper converts the panic into a crash reason string so
+    // the existing crash-recording path handles it.
+
+    #[test]
+    fn handle_task_passes_through_ok_ok() {
+        let br = BatchResult {
+            entities: Vec::new(),
+            findings: Vec::new(),
+        };
+        let out = handle_plugin_task_join_result(Ok(Ok(br)), "python");
+        assert!(out.is_ok());
+    }
+
+    #[test]
+    fn handle_task_passes_through_ok_err() {
+        let out =
+            handle_plugin_task_join_result(Ok(Err("spawn failed: ENOENT".to_owned())), "python");
+        match out {
+            Err(s) => assert_eq!(s, "spawn failed: ENOENT"),
+            Ok(_) => panic!("expected Err pass-through"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_task_real_spawn_blocking_panic_is_converted() {
+        // Drive a real JoinError through the helper by panicking inside
+        // spawn_blocking. Asserting on the structure-of-Err (not the exact
+        // message) so this stays robust across tokio's internal formatting.
+        let join_result = tokio::task::spawn_blocking(|| -> Result<BatchResult, String> {
+            panic!("simulated plugin-task panic");
+        })
+        .await;
+        assert!(
+            join_result.is_err(),
+            "spawn_blocking should surface panic as JoinError"
+        );
+        let out = handle_plugin_task_join_result(join_result, "python");
+        match out {
+            Err(s) => {
+                assert!(
+                    s.contains("plugin task for python panicked"),
+                    "reason must identify plugin_id; got: {s}"
+                );
+            }
+            Ok(_) => panic!("JoinError must convert to Err, not Ok"),
+        }
+    }
 }
