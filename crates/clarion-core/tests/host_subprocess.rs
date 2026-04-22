@@ -140,21 +140,26 @@ fn t1_subprocess_happy_path() {
     );
 }
 
-/// T9: handshake failure on a subprocess that exits before responding.
+/// T9: handshake failure on a subprocess that exits before responding
+/// returns `Err` promptly — the host does not hang on a closed stdout.
 ///
 /// Points `executable` at `/bin/true` (or Windows equivalent), which exits
 /// immediately. The host tries to read the initialize response from a closed
-/// stdout and returns a transport error. Before the zombie-reap fix, the
-/// failing `handshake()?` path dropped the `Child` without `wait()`, leaving
-/// a zombie in the process table per spawn.
+/// stdout and returns a transport error.
 ///
-/// Direct zombie observation requires walking `/proc`, which is Linux-only
-/// and brittle across kernel versions. This test exercises the error path
-/// (asserts `Err` is returned quickly) — reap correctness itself lives in
-/// code review of `host.rs::spawn`'s `if let Err(e) = host.handshake()` block.
+/// **What this test asserts**: `spawn()` returns `Err` and the whole call
+/// completes well under 5 s. That's strictly a "did we hang?" probe — it
+/// does NOT directly verify the zombie-reap behaviour added in commit
+/// 0fcc57f (that fix is covered by code review of `host.rs::spawn`'s
+/// `if let Err(e) = host.handshake()` block). Direct zombie observation
+/// requires walking `/proc`, which is Linux-only and brittle across kernel
+/// versions.
+///
+/// The earlier name `t9_handshake_failure_exits_cleanly_without_hanging`
+/// overstated this — "exits cleanly" implied zombie-reap coverage.
 #[test]
 #[cfg(unix)]
-fn t9_handshake_failure_exits_cleanly_without_hanging() {
+fn t9_handshake_failure_on_immediate_exit_returns_err_promptly() {
     let mut manifest = parse_manifest(FIXTURE_MANIFEST_BYTES).expect("fixture manifest must parse");
     // `/bin/true` exists on all Unix systems, exits 0 without reading stdin.
     manifest.plugin.executable = "/bin/true".to_owned();
