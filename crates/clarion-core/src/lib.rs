@@ -16,9 +16,13 @@ pub use plugin::{
     // host (Task 6) — facade for callers that spawn/connect plugins
     AcceptedEntity,
     CapExceeded,
+    // breaker (Task 7) — callers drive crash-loop accounting
+    CrashLoopBreaker,
+    CrashLoopState,
     // discovery (Task 5) — callers enumerate plugins
     DiscoveredPlugin,
     DiscoveryError,
+    FINDING_DISABLED_CRASH_LOOP,
     HostError,
     HostFinding,
     // jail / limits errors — callers may want to match on these

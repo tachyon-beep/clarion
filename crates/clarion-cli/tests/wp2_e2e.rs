@@ -206,3 +206,141 @@ fn wp2_e2e_smoke_fixture_plugin_round_trip() {
         "entity name must be 'demo.sample'; got {entity_name:?}"
     );
 }
+
+/// Regression for wp2 review-2 (clarion-978c8d6f15): crash-loop breaker is
+/// wired into the production analyze path AND a single plugin crash no
+/// longer tanks the whole run.
+///
+/// Scenario:
+/// - `clarion-plugin-fixture` + its manifest in `plugin_dir_a` (extensions = mt)
+/// - `clarion-plugin-broken` (symlink to /bin/true) + a manifest declaring
+///   `plugin_id` "broken" and extensions = "bk" in `plugin_dir_b`
+/// - Project root has `demo.mt` (fixture input) and `demo.bk` (broken input)
+/// - Both plugin dirs prepended to PATH
+///
+/// Expected: `broken` fails handshake (no response on closed stdout), its
+/// crash is recorded on the breaker, the run continues, and the fixture
+/// plugin processes `demo.mt` successfully. The run resolves to `failed`
+/// (exit 1, runs.status = 'failed') but the fixture's entity is persisted
+/// — continue-past-crash preserves partial work.
+#[test]
+fn wp2_crash_in_one_plugin_does_not_prevent_other_plugins_from_running() {
+    // 1. Locate the fixture binary.
+    let fixture_bin = fixture_binary_path();
+
+    // 2. plugin_dir_a: working fixture.
+    let plugin_dir_a = setup_plugin_dir(&fixture_bin);
+
+    // 3. plugin_dir_b: broken plugin pointing at /bin/true.
+    let plugin_dir_b = TempDir::new().expect("create broken plugin dir");
+    let broken_bin = plugin_dir_b.path().join("clarion-plugin-broken");
+    std::os::unix::fs::symlink("/bin/true", &broken_bin).expect("symlink /bin/true");
+    let broken_manifest = r#"
+[plugin]
+name = "clarion-plugin-broken"
+plugin_id = "broken"
+version = "0.1.0"
+protocol_version = "1.0"
+executable = "clarion-plugin-broken"
+language = "broken"
+extensions = ["bk"]
+
+[capabilities.runtime]
+expected_max_rss_mb = 256
+expected_entities_per_file = 100
+wardline_aware = false
+reads_outside_project_root = false
+
+[ontology]
+entity_kinds = ["widget"]
+edge_kinds = []
+rule_id_prefix = "CLA-BROKEN-"
+ontology_version = "0.1.0"
+"#;
+    fs::write(plugin_dir_b.path().join("plugin.toml"), broken_manifest)
+        .expect("write broken plugin.toml");
+
+    // 4. Set up project directory with one file per plugin extension.
+    let project_dir = TempDir::new().expect("create project tempdir");
+    clarion_bin()
+        .args(["install", "--path"])
+        .arg(project_dir.path())
+        .assert()
+        .success();
+    fs::write(
+        project_dir.path().join("demo.mt"),
+        b"widget demo.sample {}\n",
+    )
+    .expect("write demo.mt");
+    fs::write(project_dir.path().join("demo.bk"), b"// broken's input\n").expect("write demo.bk");
+
+    // 5. PATH with BOTH plugin dirs.
+    let current_path = env::var_os("PATH").unwrap_or_default();
+    let new_path = env::join_paths(
+        [
+            plugin_dir_a.path().to_path_buf(),
+            plugin_dir_b.path().to_path_buf(),
+        ]
+        .into_iter()
+        .chain(env::split_paths(&current_path)),
+    )
+    .expect("join_paths");
+
+    // 6. analyze must exit non-zero (a plugin crashed) but the run still
+    //    processes the other plugin's files.
+    let out = clarion_bin()
+        .args(["analyze"])
+        .arg(project_dir.path())
+        .env("PATH", &new_path)
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("broken"),
+        "stderr should name the crashed plugin; got: {stderr}"
+    );
+
+    // 7. Verify the DB: run = 'failed', entity from fixture IS persisted.
+    //    `fail_run` writes the reason into stats.failure_reason (JSON).
+    let conn = Connection::open(project_dir.path().join(".clarion/clarion.db")).unwrap();
+    let (row_count, run_status, stats_raw): (i64, String, String) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(MAX(status), ''), COALESCE(MAX(stats), '') FROM runs",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("query runs");
+    assert_eq!(row_count, 1, "expected exactly one run row");
+    assert_eq!(
+        run_status, "failed",
+        "any-plugin-crash must still mark run as failed; got {run_status:?}"
+    );
+    let stats: serde_json::Value =
+        serde_json::from_str(&stats_raw).expect("stats must be valid JSON");
+    let failure_reason = stats["failure_reason"]
+        .as_str()
+        .expect("failure_reason must be a string");
+    assert!(
+        failure_reason.contains("broken"),
+        "failure_reason should name the crashed plugin; got {failure_reason:?}"
+    );
+
+    // This is the behavioural assertion that matters: the fixture plugin's
+    // entity is persisted even though `broken` crashed earlier in the run.
+    let entity_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
+        .expect("query entities count");
+    assert_eq!(
+        entity_count, 1,
+        "fixture plugin's entity must still be persisted despite broken plugin's crash; got {entity_count}",
+    );
+    let entity_plugin_id: String = conn
+        .query_row("SELECT plugin_id FROM entities LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .expect("query entity plugin_id");
+    assert_eq!(
+        entity_plugin_id, "fixture",
+        "surviving entity must be from the fixture plugin; got {entity_plugin_id:?}"
+    );
+}

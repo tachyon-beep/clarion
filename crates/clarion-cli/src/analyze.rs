@@ -16,7 +16,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use uuid::Uuid;
 
-use clarion_core::{AcceptedEntity, DiscoveredPlugin, HostError, HostFinding, discover};
+use clarion_core::{
+    AcceptedEntity, CrashLoopBreaker, CrashLoopState, DiscoveredPlugin,
+    FINDING_DISABLED_CRASH_LOOP, HostError, HostFinding, discover,
+};
 use clarion_storage::{
     DEFAULT_BATCH_SIZE, DEFAULT_CHANNEL_CAPACITY, Writer,
     commands::{EntityRecord, RunStatus, WriterCmd},
@@ -165,8 +168,21 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
     tracing::info!(file_count = source_files.len(), "source tree walk complete");
 
     // ── Per-plugin processing ─────────────────────────────────────────────────
+    //
+    // A per-plugin crash (spawn / handshake / analyze_file Err) does NOT tank
+    // the whole run — other plugins still get a chance. Crashes are recorded
+    // on the shared `CrashLoopBreaker`; once >3 in 60 s the breaker trips,
+    // the host emits `FINDING_DISABLED_CRASH_LOOP`, and remaining plugins are
+    // skipped. A run with any crashes still resolves to `RunOutcome::Failed`
+    // (plus exit 1 per the bail!() below) so CI sees the problem — continue-
+    // past-crash preserves partial work, not failure signal.
+    //
+    // Writer-actor errors (InsertEntity rejected) ARE run-fatal: the DB
+    // layer is unusable for the rest of this run.
     let mut total_entity_count: u64 = 0;
     let mut run_outcome: RunOutcome = RunOutcome::Completed;
+    let mut breaker = CrashLoopBreaker::default();
+    let mut crash_reasons: Vec<String> = Vec::new();
 
     'plugins: for plugin in plugins {
         let plugin_id = plugin.manifest.plugin.plugin_id.clone();
@@ -215,8 +231,23 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
 
         match spawn_result {
             Err(reason) => {
-                run_outcome = RunOutcome::Failed { reason };
-                break 'plugins;
+                tracing::warn!(
+                    plugin_id = %plugin_id,
+                    reason = %reason,
+                    "plugin crashed; recording crash and continuing to next plugin",
+                );
+                crash_reasons.push(format!("{plugin_id}: {reason}"));
+                let state = breaker.record_crash();
+                if state == CrashLoopState::Tripped {
+                    tracing::warn!(
+                        subcode = FINDING_DISABLED_CRASH_LOOP,
+                        crash_count = crash_reasons.len(),
+                        "crash-loop breaker tripped; skipping remaining plugins in this run",
+                    );
+                    break 'plugins;
+                }
+                // Fall through to the next iteration — nothing else to do
+                // for a crashed plugin, and there's no code after the match.
             }
             Ok(BatchResult { entities, findings }) => {
                 // Log findings individually (Tier B persistence is future
@@ -269,7 +300,7 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                         error = %e,
                         "writer-actor rejected InsertEntity; failing run"
                     );
-                    run_outcome = RunOutcome::Failed {
+                    run_outcome = RunOutcome::HardFailed {
                         reason: format!("{e:#}"),
                     };
                     break 'plugins;
@@ -281,10 +312,28 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
     }
 
     // ── Commit or fail the run ────────────────────────────────────────────────
+    //
+    // Writer-actor failures set `run_outcome = HardFailed` above (and break).
+    // If only plugin crashes occurred (no writer-actor failure), `run_outcome`
+    // is still `Completed` — promote it to `SoftFailed` so the pending entity
+    // batch commits AND the run row marks failed. Crash-free completions
+    // stay `Completed` regardless of entity count.
+    if matches!(run_outcome, RunOutcome::Completed) && !crash_reasons.is_empty() {
+        run_outcome = RunOutcome::SoftFailed {
+            reason: format!(
+                "{} plugin(s) crashed: {}",
+                crash_reasons.len(),
+                crash_reasons.join("; "),
+            ),
+        };
+    }
+
     let completed_at = iso8601_now();
     // Extract the failure reason (if any) before the match consumes run_outcome.
     let fail_reason: Option<String> = match &run_outcome {
-        RunOutcome::Failed { reason } => Some(reason.clone()),
+        RunOutcome::SoftFailed { reason } | RunOutcome::HardFailed { reason } => {
+            Some(reason.clone())
+        }
         RunOutcome::Completed => None,
     };
 
@@ -303,7 +352,29 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("{e}"))
                 .context("CommitRun(Completed)")?;
         }
-        RunOutcome::Failed { reason } => {
+        RunOutcome::SoftFailed { reason } => {
+            // Commit entities inserted by healthy plugins AND mark the run
+            // failed, atomically (writer folds the UPDATE into the open tx).
+            // The stats JSON carries both fields so operators can see what
+            // was persisted alongside the failure reason.
+            let stats_json = serde_json::json!({
+                "entities_inserted": total_entity_count,
+                "failure_reason": reason,
+            })
+            .to_string();
+            writer
+                .send_wait(|ack| WriterCmd::CommitRun {
+                    run_id: run_id.clone(),
+                    status: RunStatus::Failed,
+                    completed_at,
+                    stats_json,
+                    ack,
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+                .context("CommitRun(Failed) — soft fail")?;
+        }
+        RunOutcome::HardFailed { reason } => {
             writer
                 .send_wait(|ack| WriterCmd::FailRun {
                     run_id: run_id.clone(),
@@ -313,7 +384,7 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                 })
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))
-                .context("FailRun")?;
+                .context("FailRun — hard fail")?;
         }
     }
 
@@ -335,11 +406,24 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
 }
 
 // ── Run-outcome ───────────────────────────────────────────────────────────────
+//
+// Three terminal states because plugin crashes and writer-actor failures need
+// different SQL paths:
+//
+// - `Completed`: all plugins ran cleanly → `CommitRun(Completed)`.
+// - `SoftFailed`: one or more plugins crashed, but other plugins produced
+//   entities that should persist → `CommitRun(Failed)`. The writer folds
+//   `UPDATE runs ... status='failed'` into the open entity transaction so
+//   the batch commits and the run row marks failed atomically. Exit 1.
+// - `HardFailed`: writer-actor rejected an `InsertEntity` (DB locked, disk
+//   full, etc.) → `FailRun`. The writer rolls back the open transaction.
+//   Exit 1. Continuing past this makes no sense — the DB is unusable.
 
 #[derive(Debug)]
 enum RunOutcome {
     Completed,
-    Failed { reason: String },
+    SoftFailed { reason: String },
+    HardFailed { reason: String },
 }
 
 // ── Blocking plugin worker ────────────────────────────────────────────────────
