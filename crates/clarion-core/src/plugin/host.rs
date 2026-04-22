@@ -1087,11 +1087,17 @@ ontology_version = "0.1.0"
             result.len()
         );
         let findings = host.take_findings();
-        assert!(
-            findings
-                .iter()
-                .any(|f| f.subcode == FINDING_UNDECLARED_KIND),
-            "must have CLA-INFRA-PLUGIN-UNDECLARED-KIND; got: {findings:?}"
+        // Pin the count to exactly one. `any()` would pass even if the
+        // host silently double-emitted the finding (cf. similar weakness
+        // in T6 pre-fix). Undeclared-kind test emits exactly one entity;
+        // the finding count must match 1:1.
+        let undeclared_count = findings
+            .iter()
+            .filter(|f| f.subcode == FINDING_UNDECLARED_KIND)
+            .count();
+        assert_eq!(
+            undeclared_count, 1,
+            "expected exactly one FINDING_UNDECLARED_KIND; got {undeclared_count} in {findings:?}"
         );
     }
 
@@ -1245,11 +1251,29 @@ ontology_version = "0.1.0"
             "error must be PathEscapeBreakerTripped; got: {err:?}"
         );
         let findings = host.take_findings();
-        assert!(
-            findings
-                .iter()
-                .any(|f| f.subcode == FINDING_DISABLED_PATH_ESCAPE),
-            "must have CLA-INFRA-PLUGIN-DISABLED-PATH-ESCAPE; got: {findings:?}"
+
+        // Pin the exact finding counts. Each of the first 10 escapes
+        // produces a `FINDING_PATH_ESCAPE` and increments the breaker;
+        // the 11th also produces a `FINDING_PATH_ESCAPE` and then the
+        // breaker trips, appending a single `FINDING_DISABLED_PATH_ESCAPE`.
+        // An `any()` assertion would pass even if 9 individual escape
+        // findings were silently dropped, or if the breaker tripped on
+        // the first escape instead of the 11th.
+        let path_escape_count = findings
+            .iter()
+            .filter(|f| f.subcode == FINDING_PATH_ESCAPE)
+            .count();
+        assert_eq!(
+            path_escape_count, 11,
+            "expected exactly 11 FINDING_PATH_ESCAPE; got {path_escape_count} in {findings:?}"
+        );
+        let disabled_count = findings
+            .iter()
+            .filter(|f| f.subcode == FINDING_DISABLED_PATH_ESCAPE)
+            .count();
+        assert_eq!(
+            disabled_count, 1,
+            "expected exactly one FINDING_DISABLED_PATH_ESCAPE; got {disabled_count} in {findings:?}"
         );
     }
 
@@ -1442,6 +1466,113 @@ ontology_version = "0.1.0"
         assert_eq!(
             offense.metadata.get("field").map(String::as_str),
             Some("source.file_path"),
+        );
+    }
+
+    /// T8c — oversize `id` is caught at the first check (stable iteration
+    /// order: `id` → `kind` → `qualified_name` → `source.file_path`). A
+    /// refactor that silently removed the `id` check from `oversize_field`
+    /// would pass T8 and T8b without this guard.
+    #[test]
+    fn t8c_oversize_id_is_dropped_with_finding() {
+        let manifest = compliant_manifest();
+        let mut mock = MockPlugin::new_compliant();
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        let sample = project_dir.path().join("sample.mock");
+        std::fs::write(&sample, b"").unwrap();
+
+        // Build an `id` that exceeds the cap. Other fields are valid.
+        let huge_id = "a".repeat(MAX_ENTITY_FIELD_BYTES + 1);
+        let response_id = host.next_request_id_test();
+        let response_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": response_id,
+            "result": {
+                "entities": [{
+                    "id": huge_id,
+                    "kind": "function",
+                    "qualified_name": "stub",
+                    "source": { "file_path": sample.to_string_lossy().into_owned() }
+                }]
+            }
+        });
+        let body = serde_json::to_vec(&response_json).unwrap();
+        {
+            let reader = host.reader_mut_test();
+            let pos_before = reader.position();
+            let old_end = reader.get_ref().len() as u64;
+            let mut framed: Vec<u8> = Vec::new();
+            write_frame(&mut framed, &Frame { body }).unwrap();
+            reader.get_mut().extend_from_slice(&framed);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
+        }
+
+        host.analyze_file(&sample).expect("must not error");
+        let findings = host.take_findings();
+        let offense = findings
+            .iter()
+            .find(|f| f.subcode == FINDING_ENTITY_FIELD_OVERSIZE)
+            .unwrap_or_else(|| panic!("expected oversize finding; got {findings:?}"));
+        assert_eq!(
+            offense.metadata.get("field").map(String::as_str),
+            Some("id"),
+            "field metadata must pinpoint id; got: {:?}",
+            offense.metadata
+        );
+    }
+
+    /// T8d — oversize `kind` is caught after `id` in the stable iteration
+    /// order. Complements T8c so all four bounded fields are exercised.
+    #[test]
+    fn t8d_oversize_kind_is_dropped_with_finding() {
+        let manifest = compliant_manifest();
+        let mut mock = MockPlugin::new_compliant();
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        let sample = project_dir.path().join("sample.mock");
+        std::fs::write(&sample, b"").unwrap();
+
+        let huge_kind = "a".repeat(MAX_ENTITY_FIELD_BYTES + 1);
+        let response_id = host.next_request_id_test();
+        let response_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": response_id,
+            "result": {
+                "entities": [{
+                    "id": "mock:function:stub",
+                    "kind": huge_kind,
+                    "qualified_name": "stub",
+                    "source": { "file_path": sample.to_string_lossy().into_owned() }
+                }]
+            }
+        });
+        let body = serde_json::to_vec(&response_json).unwrap();
+        {
+            let reader = host.reader_mut_test();
+            let pos_before = reader.position();
+            let old_end = reader.get_ref().len() as u64;
+            let mut framed: Vec<u8> = Vec::new();
+            write_frame(&mut framed, &Frame { body }).unwrap();
+            reader.get_mut().extend_from_slice(&framed);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
+        }
+
+        host.analyze_file(&sample).expect("must not error");
+        let findings = host.take_findings();
+        let offense = findings
+            .iter()
+            .find(|f| f.subcode == FINDING_ENTITY_FIELD_OVERSIZE)
+            .unwrap_or_else(|| panic!("expected oversize finding; got {findings:?}"));
+        assert_eq!(
+            offense.metadata.get("field").map(String::as_str),
+            Some("kind"),
+            "field metadata must pinpoint kind; got: {:?}",
+            offense.metadata
         );
     }
 
