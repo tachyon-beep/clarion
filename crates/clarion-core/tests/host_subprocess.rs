@@ -139,3 +139,41 @@ fn t1_subprocess_happy_path() {
         "no findings expected on happy path; got: {findings:?}"
     );
 }
+
+/// T9: handshake failure on a subprocess that exits before responding.
+///
+/// Points `executable` at `/bin/true` (or Windows equivalent), which exits
+/// immediately. The host tries to read the initialize response from a closed
+/// stdout and returns a transport error. Before the zombie-reap fix, the
+/// failing `handshake()?` path dropped the `Child` without `wait()`, leaving
+/// a zombie in the process table per spawn.
+///
+/// Direct zombie observation requires walking `/proc`, which is Linux-only
+/// and brittle across kernel versions. This test exercises the error path
+/// (asserts `Err` is returned quickly) — reap correctness itself lives in
+/// code review of `host.rs::spawn`'s `if let Err(e) = host.handshake()` block.
+#[test]
+#[cfg(unix)]
+fn t9_handshake_failure_exits_cleanly_without_hanging() {
+    let mut manifest = parse_manifest(FIXTURE_MANIFEST_BYTES).expect("fixture manifest must parse");
+    // `/bin/true` exists on all Unix systems, exits 0 without reading stdin.
+    manifest.plugin.executable = "/bin/true".to_owned();
+
+    let project_dir = tempfile::TempDir::new().expect("tmpdir");
+
+    let start = std::time::Instant::now();
+    let result = PluginHost::spawn(manifest, project_dir.path());
+    let elapsed = start.elapsed();
+
+    assert!(
+        result.is_err(),
+        "spawn must fail when executable exits before handshake response"
+    );
+    // Sanity: the handshake-failure path must not block. If reap lost a
+    // waitpid, this would still return but a regression that swapped kill()
+    // or wait() for a blocking read on the closed pipe would hang here.
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "handshake failure must return promptly; took {elapsed:?}"
+    );
+}

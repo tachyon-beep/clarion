@@ -423,7 +423,18 @@ impl
             std::io::BufWriter::new(stdin),
         );
 
-        host.handshake()?;
+        // Reap on handshake failure. `std::process::Child::Drop` does NOT
+        // waitpid on Unix, so returning Err while `child` goes out of scope
+        // leaves a zombie per failed spawn. Covers both handshake error
+        // paths (transport/protocol and manifest capability refusal); the
+        // capability path already ran `do_shutdown()` but that does not
+        // reap either. Errors from kill/wait are best-effort — by this
+        // point the child's state is already anomalous.
+        if let Err(e) = host.handshake() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
 
         Ok((host, child))
     }
