@@ -120,8 +120,11 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("writer actor panic: {e}"))?
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-            println!("analyze complete: run {run_id} failed — {reason}");
-            return Ok(());
+            // Non-zero exit. Printing to stdout + returning Ok(()) here
+            // hides the failure from `clarion analyze && do_next` chains
+            // and breaks CI gating that reads `$?`. The run row in the DB
+            // is already marked `failed` above.
+            bail!("analyze run {run_id} failed — {reason}");
         }
 
         tracing::warn!(run_id = %run_id, "no plugins discovered");
@@ -320,11 +323,14 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("writer actor panic: {e}"))?
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    // On FailRun: bail so the process exits non-zero. The run row is
+    // already marked `failed` in the DB by the FailRun branch above; this
+    // is purely about surfacing failure to the operator's shell / CI.
     if let Some(reason) = fail_reason {
-        println!("analyze complete: run {run_id} failed — {reason}");
-    } else {
-        println!("analyze complete: run {run_id} completed ({total_entity_count} entities)");
+        bail!("analyze run {run_id} failed — {reason}");
     }
+
+    println!("analyze complete: run {run_id} completed ({total_entity_count} entities)");
     Ok(())
 }
 
