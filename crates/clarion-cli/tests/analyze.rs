@@ -10,15 +10,23 @@ fn clarion_bin() -> Command {
 #[test]
 fn analyze_without_plugins_writes_skipped_run_row() {
     let dir = tempfile::tempdir().unwrap();
+
+    // Scrub PATH — if the developer or CI image has any clarion-plugin-*
+    // binary installed (including the project's own fixture), discovery
+    // will find it and the run transitions out of `skipped_no_plugins`.
+    // The sibling test `analyze_failrun_exits_nonzero_with_run_row_marked_failed`
+    // uses the same pattern.
     clarion_bin()
         .args(["install", "--path"])
         .arg(dir.path())
+        .env("PATH", "")
         .assert()
         .success();
 
     clarion_bin()
         .args(["analyze"])
         .arg(dir.path())
+        .env("PATH", "")
         .assert()
         .success();
 
