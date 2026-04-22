@@ -31,10 +31,14 @@ pub use limits::{
     FINDING_PATH_ESCAPE, PathEscapeBreaker, apply_prlimit_as, effective_rss_mib,
 };
 pub use manifest::{Manifest, ManifestError, parse_manifest};
+// `make_notification` and `make_request` are intentionally omitted —
+// they're `pub(crate)` because they panic on serde failure for a
+// property (well-formed param types) that external callers cannot
+// guarantee. External consumers should build envelopes directly and
+// handle the serde error.
 pub use protocol::{
     AnalyzeFileParams, AnalyzeFileResult, ExitNotification, InitializeParams, InitializeResult,
     InitializedNotification, JsonRpcVersion, NotificationEnvelope, ProtocolError, RequestEnvelope,
-    ResponseEnvelope, ResponsePayload, ShutdownParams, ShutdownResult, make_notification,
-    make_request,
+    ResponseEnvelope, ResponsePayload, ShutdownParams, ShutdownResult,
 };
 pub use transport::{Frame, TransportError, read_frame, write_frame};

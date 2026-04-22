@@ -552,9 +552,10 @@ impl MockPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin::protocol::{make_notification, make_request};
     use crate::plugin::{
         AnalyzeFileParams, InitializeParams, InitializedNotification, ResponsePayload,
-        TransportError, make_notification, make_request,
+        TransportError,
     };
 
     // ── Helper: write a framed envelope into the mock's stdin ─────────────────
@@ -829,7 +830,7 @@ mod tests {
             project_root: "/tmp/x".to_owned(),
         };
         {
-            use crate::plugin::make_request;
+            use crate::plugin::protocol::make_request;
             let env = make_request("initialize", &init_params, 1);
             let body = serde_json::to_vec(&env).expect("serialise frame 1");
             write_frame(mock.stdin(), &Frame { body }).expect("write frame 1");
@@ -837,7 +838,7 @@ mod tests {
 
         // Build frame 2: second initialize (will trigger state guard).
         {
-            use crate::plugin::make_request;
+            use crate::plugin::protocol::make_request;
             let env = make_request("initialize", &init_params, 2);
             let body = serde_json::to_vec(&env).expect("serialise frame 2");
             write_frame(mock.stdin(), &Frame { body }).expect("write frame 2");

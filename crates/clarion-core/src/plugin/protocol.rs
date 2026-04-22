@@ -290,12 +290,19 @@ pub struct ExitNotification {}
 
 /// Convenience: build a `RequestEnvelope` from typed params.
 ///
+/// Kept `pub(crate)` because the body panics on `serde_json::to_value` failure
+/// and the panic condition ("`params` serialises to a valid JSON value") is a
+/// property of the internally-defined `ShutdownParams` / `InitializeParams`
+/// / etc. structs, not something an arbitrary external caller could rely on.
+/// External crates that need a `RequestEnvelope` should construct one
+/// directly and surface the serde error themselves.
+///
 /// # Panics
 ///
 /// Panics if serialisation of `params` fails. This should never happen for the
 /// well-formed Sprint 1 param types. Callers that need explicit error handling
 /// should construct [`RequestEnvelope`] directly.
-pub fn make_request<P: Serialize>(method: &str, params: &P, id: i64) -> RequestEnvelope {
+pub(crate) fn make_request<P: Serialize>(method: &str, params: &P, id: i64) -> RequestEnvelope {
     RequestEnvelope {
         jsonrpc: JsonRpcVersion,
         method: method.to_owned(),
@@ -306,12 +313,16 @@ pub fn make_request<P: Serialize>(method: &str, params: &P, id: i64) -> RequestE
 
 /// Convenience: build a `NotificationEnvelope` from typed params.
 ///
+/// Kept `pub(crate)` for the same reason as [`make_request`] — the panic
+/// condition is an internal-types property; external callers that want
+/// a `NotificationEnvelope` should construct one directly.
+///
 /// # Panics
 ///
 /// Panics if serialisation of `params` fails. This should never happen for the
 /// well-formed Sprint 1 param types. Callers that need explicit error handling
 /// should construct [`NotificationEnvelope`] directly.
-pub fn make_notification<P: Serialize>(method: &str, params: &P) -> NotificationEnvelope {
+pub(crate) fn make_notification<P: Serialize>(method: &str, params: &P) -> NotificationEnvelope {
     NotificationEnvelope {
         jsonrpc: JsonRpcVersion,
         method: method.to_owned(),
