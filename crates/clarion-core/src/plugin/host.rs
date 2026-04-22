@@ -745,6 +745,11 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
         self.next_request_id = id;
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_entity_cap_test(&mut self, cap: EntityCountCap) {
+        self.entity_cap = cap;
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     fn next_id(&mut self) -> i64 {
@@ -1437,6 +1442,102 @@ ontology_version = "0.1.0"
         assert_eq!(
             offense.metadata.get("field").map(String::as_str),
             Some("source.file_path"),
+        );
+    }
+
+    // ── T9: entity-cap kills the plugin and returns EntityCapExceeded ────────
+
+    /// T9 — the ADR-021 §2c entity cap, wired end-to-end through
+    /// `analyze_file`. A plugin emits three compliant entities. The host is
+    /// configured with an artificially tight cap (`max = 2`). The first two
+    /// pass `try_admit`; the third triggers `CapExceeded`, which causes the
+    /// host to emit [`FINDING_ENTITY_CAP`], attempt graceful shutdown, and
+    /// return [`HostError::EntityCapExceeded`].
+    ///
+    /// Closes the A.2.3 signoff gap — cap unit tests in `limits.rs` exercise
+    /// `EntityCountCap` in isolation, but the host-level wiring at
+    /// `host.rs::analyze_file`'s cap check was previously untested.
+    #[test]
+    fn t9_entity_cap_exceeded_kills_plugin_and_returns_error() {
+        let manifest = compliant_manifest(); // entity_kinds = ["function"]
+        let mut mock = MockPlugin::new_compliant();
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        // Tighten the cap: 2 admits, 3rd trips.
+        host.set_entity_cap_test(EntityCountCap::new(2));
+
+        // Create three real files so the jail check passes (each entity's
+        // source.file_path has to live inside the canonicalised project
+        // root — the cap check is the LAST gate in the pipeline, so we
+        // have to satisfy all prior ones to reach it).
+        let samples: Vec<std::path::PathBuf> = (0..3u8)
+            .map(|i| {
+                let p = project_dir.path().join(format!("sample_{i}.mock"));
+                std::fs::write(&p, b"").unwrap();
+                p
+            })
+            .collect();
+
+        // Craft a single `analyze_file` response carrying three compliant
+        // entities. The mock's scripted-Behaviour path only emits one entity
+        // per response; build the response JSON directly like T8 does.
+        let response_id = host.next_request_id_test();
+        let entities_json: Vec<serde_json::Value> = (0..3u8)
+            .map(|i| {
+                serde_json::json!({
+                    "id": format!("mock:function:stub_{i}"),
+                    "kind": "function",
+                    "qualified_name": format!("stub_{i}"),
+                    "source": {
+                        "file_path": samples[i as usize].to_string_lossy().into_owned(),
+                    }
+                })
+            })
+            .collect();
+        let response_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": response_id,
+            "result": { "entities": entities_json }
+        });
+        let body = serde_json::to_vec(&response_json).unwrap();
+        {
+            let reader = host.reader_mut_test();
+            let pos_before = reader.position();
+            let old_end = reader.get_ref().len() as u64;
+            let mut framed: Vec<u8> = Vec::new();
+            write_frame(&mut framed, &Frame { body }).unwrap();
+            reader.get_mut().extend_from_slice(&framed);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
+        }
+
+        let err = host
+            .analyze_file(&samples[0])
+            .expect_err("3rd entity must trip entity cap");
+        assert!(
+            matches!(err, HostError::EntityCapExceeded(_)),
+            "expected EntityCapExceeded; got {err:?}"
+        );
+
+        let findings = host.take_findings();
+        let cap_finding = findings
+            .iter()
+            .find(|f| f.subcode == FINDING_ENTITY_CAP)
+            .unwrap_or_else(|| panic!("expected FINDING_ENTITY_CAP finding; got {findings:?}"));
+        // Metadata must pinpoint the cap and the attempted-reach count
+        // (per HostFinding::entity_cap_exceeded_finding at host.rs:272).
+        assert_eq!(
+            cap_finding.metadata.get("cap").map(String::as_str),
+            Some("2"),
+            "cap metadata must be 2; got {:?}",
+            cap_finding.metadata
+        );
+        assert_eq!(
+            cap_finding.metadata.get("would_reach").map(String::as_str),
+            Some("3"),
+            "would_reach metadata must be 3; got {:?}",
+            cap_finding.metadata
         );
     }
 
