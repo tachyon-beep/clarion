@@ -583,29 +583,19 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
         let body = serde_json::to_vec(&req)?;
         write_frame(&mut self.writer, &Frame { body })?;
 
-        // Step 2: read initialize response.
-        let resp_frame = read_frame(&mut self.reader, self.ceiling)?;
-        let resp: ResponseEnvelope = serde_json::from_slice(&resp_frame.body)?;
-        if resp.id != id {
-            return Err(HostError::Protocol(ProtocolError {
-                code: -32_600,
-                message: format!("response id {} does not match request id {id}", resp.id),
-                data: None,
-            }));
-        }
-        let init_result: InitializeResult = match &resp.payload {
-            ResponsePayload::Result(v) => serde_json::from_value::<InitializeResult>(v.clone())
-                .map_err(|e| {
-                    HostError::Protocol(ProtocolError {
-                        code: -32_602,
-                        message: format!(
-                            "initialize response did not conform to InitializeResult: {e}"
-                        ),
-                        data: None,
-                    })
-                })?,
-            ResponsePayload::Error(e) => return Err(HostError::Protocol(e.clone())),
-        };
+        // Step 2: read initialize response — drain stale frames in case the
+        // plugin pre-queued any.
+        let init_value = self.read_response_matching(id, "initialize")?;
+        let init_result: InitializeResult = serde_json::from_value::<InitializeResult>(init_value)
+            .map_err(|e| {
+                HostError::Protocol(ProtocolError {
+                    code: -32_602,
+                    message: format!(
+                        "initialize response did not conform to InitializeResult: {e}"
+                    ),
+                    data: None,
+                })
+            })?;
         // Store the ontology_version for ADR-007 cache keying (consumed by
         // WP6). Validating here means a plugin that omits or corrupts the
         // field surfaces at handshake time rather than mid-run when WP6
@@ -671,22 +661,11 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
         let body = serde_json::to_vec(&req)?;
         write_frame(&mut self.writer, &Frame { body })?;
 
-        let resp_frame = read_frame(&mut self.reader, self.ceiling)?;
-        let resp: ResponseEnvelope = serde_json::from_slice(&resp_frame.body)?;
-        if resp.id != id {
-            return Err(HostError::Protocol(ProtocolError {
-                code: -32_600,
-                message: format!(
-                    "analyze_file response id {} does not match request id {id}",
-                    resp.id
-                ),
-                data: None,
-            }));
-        }
-        let result_val = match resp.payload {
-            ResponsePayload::Result(v) => v,
-            ResponsePayload::Error(e) => return Err(HostError::Protocol(e)),
-        };
+        // Drain-until-match: any stale frames the plugin queued from a
+        // prior request or a double-send are discarded here rather than
+        // aborting the current call (and any run-level entities committed
+        // so far).
+        let result_val = self.read_response_matching(id, "analyze_file")?;
 
         let entities_raw: Vec<serde_json::Value> = result_val
             .get("entities")
@@ -891,18 +870,11 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
         let body = serde_json::to_vec(&req)?;
         write_frame(&mut self.writer, &Frame { body })?;
 
-        let resp_frame = read_frame(&mut self.reader, self.ceiling)?;
-        let resp: ResponseEnvelope = serde_json::from_slice(&resp_frame.body)?;
-        if resp.id != id {
-            return Err(HostError::Protocol(ProtocolError {
-                code: -32_600,
-                message: format!(
-                    "shutdown response id {} does not match request id {id}",
-                    resp.id
-                ),
-                data: None,
-            }));
-        }
+        // Drain-until-match (discards stale queued frames rather than
+        // failing the shutdown on a race). Error payloads on shutdown
+        // are surfaced as Protocol errors — same semantics as the prior
+        // single-read version.
+        let _ = self.read_response_matching(id, "shutdown")?;
 
         let note = make_notification("exit", &ExitNotification {});
         let body = serde_json::to_vec(&note)?;
@@ -910,7 +882,77 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
 
         Ok(())
     }
+
+    /// Read frames until one carries a `ResponseEnvelope` whose `id`
+    /// matches `expected_id`, discarding stale frames in between.
+    ///
+    /// Stale frames (responses with a mismatched id, or anything that
+    /// fails to parse as a `ResponseEnvelope`) are logged at warn level
+    /// and discarded. The budget ([`MAX_DRAIN_FRAMES`]) bounds the
+    /// amount of work a hostile plugin can force.
+    ///
+    /// This handles two threats simultaneously:
+    /// - `do_shutdown` was reading one frame and aborting if the id
+    ///   didn't match; a plugin could queue pre-baked frames and defeat
+    ///   the breaker-kill path (`clarion-c08586a2da`).
+    /// - `analyze_file` only validated the most recent id; stale frames
+    ///   from a misbehaving plugin converted per-file failures into
+    ///   run aborts after entities had already committed, giving an
+    ///   attacker a deterministic partial-commit lever
+    ///   (`clarion-ff2831eec0`).
+    ///
+    /// Returns `Ok(value)` for `ResponsePayload::Result(value)`, or
+    /// `Err(HostError::Protocol(e))` for `ResponsePayload::Error(e)`.
+    fn read_response_matching(
+        &mut self,
+        expected_id: i64,
+        method: &'static str,
+    ) -> Result<serde_json::Value, HostError> {
+        for attempt in 0..MAX_DRAIN_FRAMES {
+            let resp_frame = read_frame(&mut self.reader, self.ceiling)?;
+            let resp: ResponseEnvelope = match serde_json::from_slice(&resp_frame.body) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        method = method,
+                        attempt = attempt,
+                        error = %e,
+                        "discarding unparseable frame while waiting for {method} response",
+                    );
+                    continue;
+                }
+            };
+            if resp.id != expected_id {
+                tracing::warn!(
+                    method = method,
+                    attempt = attempt,
+                    got_id = resp.id,
+                    expected_id = expected_id,
+                    "discarding stale response while waiting for {method} response",
+                );
+                continue;
+            }
+            return match resp.payload {
+                ResponsePayload::Result(v) => Ok(v),
+                ResponsePayload::Error(e) => Err(HostError::Protocol(e)),
+            };
+        }
+        Err(HostError::Protocol(ProtocolError {
+            code: -32_600,
+            message: format!(
+                "no matching {method} response after {MAX_DRAIN_FRAMES} frames \
+                 (expected id {expected_id})"
+            ),
+            data: None,
+        }))
+    }
 }
+
+/// Maximum number of frames to read while draining to a matching
+/// response id. A plugin queueing more than this many stale frames is
+/// either buggy or adversarial; the bounded budget prevents either case
+/// from forcing the host into an unbounded read loop.
+const MAX_DRAIN_FRAMES: usize = 16;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
