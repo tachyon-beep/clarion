@@ -127,9 +127,19 @@ pub struct Manifest {
     ///
     /// The core does not interpret this table; it is preserved so Task 6 can
     /// forward it to the plugin during `initialize` if needed.
+    ///
+    /// Entry count is capped at [`MAX_INTEGRATIONS`] at parse time — see
+    /// [`parse_manifest`].
     #[serde(default)]
     pub integrations: BTreeMap<String, toml::Value>,
 }
+
+/// Maximum number of `[integrations.*]` entries accepted per manifest.
+///
+/// A typical plugin has 0–1 integration blocks (WP3 adds
+/// `[integrations.wardline]`); 64 is an order-of-magnitude ceiling that
+/// covers any legitimate future use while rejecting pathologies.
+pub const MAX_INTEGRATIONS: usize = 64;
 
 /// `[plugin]` metadata table.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -264,6 +274,20 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     let manifest: Manifest = toml::from_str(text).map_err(|e| ManifestError::Malformed {
         message: e.to_string(),
     })?;
+
+    // Cap the integrations table size. WP3 expects one entry
+    // (`[integrations.wardline]`); real-world plugin.toml files have at
+    // most a handful. MAX_INTEGRATIONS is a trust-boundary cap — an
+    // attacker-controlled plugin.toml with millions of `[integrations.*]`
+    // entries would otherwise live in memory for the run lifetime.
+    if manifest.integrations.len() > MAX_INTEGRATIONS {
+        return Err(ManifestError::Malformed {
+            message: format!(
+                "[integrations] has {} entries; maximum is {MAX_INTEGRATIONS}",
+                manifest.integrations.len(),
+            ),
+        });
+    }
 
     // 2. Structural checks.
     if manifest.plugin.name.is_empty() {
@@ -560,6 +584,51 @@ max_version = "1.0.0"
         let manifest = parse_manifest(toml.as_bytes()).unwrap();
         // The integrations table is present; the core does not interpret it.
         assert!(manifest.integrations.contains_key("wardline"));
+    }
+
+    // ── Negative: too many [integrations.*] entries ───────────────────────────
+
+    /// A `plugin.toml` with more than [`MAX_INTEGRATIONS`] entries is rejected
+    /// as `Malformed` — prevents an attacker-controlled manifest from forcing
+    /// the host to retain an unbounded `BTreeMap<String, toml::Value>` for
+    /// the run lifetime.
+    #[test]
+    fn negative_integrations_above_cap_is_rejected() {
+        use std::fmt::Write;
+        let mut toml = String::from(
+            r#"[plugin]
+name = "clarion-plugin-x"
+plugin_id = "x"
+version = "0.1.0"
+protocol_version = "1.0"
+executable = "clarion-plugin-x"
+language = "x"
+extensions = ["x"]
+
+[capabilities.runtime]
+expected_max_rss_mb = 256
+expected_entities_per_file = 100
+wardline_aware = false
+reads_outside_project_root = false
+
+[ontology]
+entity_kinds = ["widget"]
+edge_kinds = []
+rule_id_prefix = "CLA-X-"
+ontology_version = "0.1.0"
+
+"#,
+        );
+        for i in 0..=MAX_INTEGRATIONS {
+            write!(toml, "[integrations.entry_{i}]\nk = \"v\"\n\n").unwrap();
+        }
+        let err = parse_manifest(toml.as_bytes())
+            .expect_err("manifest with > MAX_INTEGRATIONS integrations must be rejected");
+        assert!(
+            matches!(err, ManifestError::Malformed { ref message }
+                if message.contains("integrations") && message.contains("maximum")),
+            "expected Malformed integrations-cap error; got {err:?}"
+        );
     }
 
     // ── Positive: plugin_id can differ from name ──────────────────────────────

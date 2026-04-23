@@ -33,6 +33,7 @@
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::io::Read;
 use std::path::PathBuf;
 
 use thiserror::Error;
@@ -82,7 +83,18 @@ pub enum DiscoveryError {
         #[source]
         source: std::io::Error,
     },
+
+    /// The manifest file exceeded [`MAX_MANIFEST_BYTES`]. Real `plugin.toml`
+    /// files are under 2 KiB; anything over 64 KiB is pathological and is
+    /// refused before it reaches the TOML parser.
+    #[error("plugin.toml at {path} exceeded max size {MAX_MANIFEST_BYTES} bytes")]
+    ManifestTooLarge { path: PathBuf },
 }
+
+/// Maximum accepted `plugin.toml` size. Real manifests are well under 2 KiB;
+/// 64 KiB is a trust-boundary cap, not a style constraint. Discovery refuses
+/// anything larger before attempting a TOML parse.
+pub const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -220,10 +232,27 @@ fn is_executable(path: &std::path::Path) -> bool {
 fn load_plugin(exec_path: PathBuf, suffix: &str) -> Result<DiscoveredPlugin, DiscoveryError> {
     let manifest_path = find_manifest(&exec_path, suffix)?;
 
-    let bytes = std::fs::read(&manifest_path).map_err(|e| DiscoveryError::Io {
+    // Cap the read size BEFORE the TOML parser sees the bytes. A plugin.toml
+    // is under 2 KiB in practice; the 64 KiB cap accepts everything legitimate
+    // while rejecting pathological payloads that would otherwise force the
+    // TOML parser to build an unbounded `toml::Value` tree.
+    let file = std::fs::File::open(&manifest_path).map_err(|e| DiscoveryError::Io {
         path: manifest_path.clone(),
         source: e,
     })?;
+    // Read one byte past the cap so we can distinguish "at cap" from "over cap".
+    let mut bytes = Vec::with_capacity(4096);
+    file.take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| DiscoveryError::Io {
+            path: manifest_path.clone(),
+            source: e,
+        })?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(DiscoveryError::ManifestTooLarge {
+            path: manifest_path,
+        });
+    }
 
     let manifest = parse_manifest(&bytes).map_err(|e| DiscoveryError::ManifestInvalid {
         path: manifest_path.clone(),
