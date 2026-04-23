@@ -46,3 +46,30 @@ jobs:
 
       - name: deny
         run: cargo deny check
+
+  python-plugin:
+    name: Python plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: plugins/python/pyproject.toml
+
+      - name: install plugin (dev extras)
+        run: python -m pip install -e 'plugins/python[dev]'
+
+      - name: ruff check
+        run: ruff check plugins/python
+
+      - name: ruff format check
+        run: ruff format --check plugins/python
+
+      - name: mypy
+        run: mypy --strict plugins/python
+
+      - name: pytest
+        run: pytest plugins/python

@@ -10,3 +10,13 @@ Cargo.lock.bak
 # Rust-analyzer / IDE caches
 /.idea
 /.vscode
+
+# Python (plugins/python/)
+.venv/
+__pycache__/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
