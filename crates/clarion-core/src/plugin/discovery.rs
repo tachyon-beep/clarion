@@ -45,7 +45,23 @@ use crate::plugin::{Manifest, ManifestError, parse_manifest};
 /// A plugin discovered via a `clarion-plugin-*` executable on `$PATH`.
 #[derive(Debug)]
 pub struct DiscoveredPlugin {
-    /// Canonicalised path to the plugin executable.
+    /// Path to the plugin executable **as found on `$PATH`**.
+    ///
+    /// Intentionally NOT canonicalised. The neighbour-manifest lookup at
+    /// [`find_manifest`] joins `plugin.toml` with this path's parent
+    /// directory; canonicalising here would follow symlinks (e.g.
+    /// `~/bin/clarion-plugin-python` → `~/.local/pipx/venvs/*/bin/...`)
+    /// and the manifest lookup would then miss the neighbour that lives
+    /// next to the symlink.
+    ///
+    /// Deduplication uses a separate canonicalised key
+    /// (`seen_dirs` inside [`discover_on_path`]), so the raw-path retained
+    /// here does not defeat shadowing.
+    ///
+    /// If you need the real binary location for an operator message (e.g.
+    /// "this plugin's binary is actually at …"), canonicalise at the point
+    /// of use; discovery keeps the raw form so downstream consumers can
+    /// make the decision.
     pub executable: PathBuf,
     /// Parsed manifest from the plugin's `plugin.toml`.
     pub manifest: Manifest,
@@ -178,6 +194,14 @@ pub fn discover_on_path(path_env: &OsStr) -> Vec<Result<DiscoveredPlugin, Discov
                 continue;
             }
 
+            // `exec_path` is the raw PATH-relative path (not canonicalised).
+            // Do not canonicalise here — the neighbour-manifest convention
+            // at `load_plugin` / `find_manifest` looks up `plugin.toml` next
+            // to this path, and a symlink install pattern (e.g. `~/bin/` full
+            // of symlinks into `~/.local/pipx/venvs/*/bin/`) expects the
+            // manifest to live next to the symlink, not next to the resolved
+            // binary in the venv. See the `executable` field doc-comment on
+            // `DiscoveredPlugin` for the full consistency story.
             let exec_path = dir.join(&file_name);
 
             // ── Exec-bit check ────────────────────────────────────────────────
