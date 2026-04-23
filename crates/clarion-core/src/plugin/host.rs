@@ -42,8 +42,9 @@ use crate::plugin::limits::{
 };
 use crate::plugin::manifest::{Manifest, ManifestError};
 use crate::plugin::protocol::{
-    AnalyzeFileParams, ExitNotification, InitializeParams, InitializedNotification, ProtocolError,
-    ResponseEnvelope, ResponsePayload, ShutdownParams, make_notification, make_request,
+    AnalyzeFileParams, ExitNotification, InitializeParams, InitializeResult,
+    InitializedNotification, ProtocolError, ResponseEnvelope, ResponsePayload, ShutdownParams,
+    make_notification, make_request,
 };
 use crate::plugin::transport::{Frame, TransportError, read_frame, write_frame};
 
@@ -415,6 +416,14 @@ where
     /// A second `shutdown()` call becomes a no-op rather than writing to
     /// a closed pipe and surfacing a spurious `BrokenPipe` error.
     terminated: bool,
+    /// Ontology version advertised by the plugin in its `initialize`
+    /// response. `None` before handshake completes; `Some(...)` after a
+    /// successful handshake.
+    ///
+    /// Retained for ADR-007 cache keying (WP6). Sprint 1 validates only
+    /// that the field is present and non-empty — semver comparison is
+    /// WP6's job.
+    ontology_version: Option<String>,
 }
 
 // ── Subprocess constructor ────────────────────────────────────────────────────
@@ -539,7 +548,16 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
             next_request_id: 1,
             findings: Vec::new(),
             terminated: false,
+            ontology_version: None,
         }
+    }
+
+    /// Ontology version advertised by the plugin during handshake.
+    ///
+    /// Returns `None` before `handshake()` has run. Used by WP6 cache
+    /// keying (ADR-007).
+    pub fn ontology_version(&self) -> Option<&str> {
+        self.ontology_version.as_deref()
     }
 
     /// Perform the `initialize` → `initialized` handshake.
@@ -575,10 +593,33 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
                 data: None,
             }));
         }
-        match &resp.payload {
-            ResponsePayload::Result(_) => {}
+        let init_result: InitializeResult = match &resp.payload {
+            ResponsePayload::Result(v) => serde_json::from_value::<InitializeResult>(v.clone())
+                .map_err(|e| {
+                    HostError::Protocol(ProtocolError {
+                        code: -32_602,
+                        message: format!(
+                            "initialize response did not conform to InitializeResult: {e}"
+                        ),
+                        data: None,
+                    })
+                })?,
             ResponsePayload::Error(e) => return Err(HostError::Protocol(e.clone())),
+        };
+        // Store the ontology_version for ADR-007 cache keying (consumed by
+        // WP6). Validating here means a plugin that omits or corrupts the
+        // field surfaces at handshake time rather than mid-run when WP6
+        // reaches for a value that was never persisted. The semver parse
+        // check is deliberately lenient — a non-empty string that can
+        // round-trip through serde is enough for Sprint 1.
+        if init_result.ontology_version.trim().is_empty() {
+            return Err(HostError::Protocol(ProtocolError {
+                code: -32_602,
+                message: "initialize response: ontology_version must not be empty".to_owned(),
+                data: None,
+            }));
         }
+        self.ontology_version = Some(init_result.ontology_version);
 
         // Step 3: validate manifest capabilities (ADR-021 §Layer 1).
         if let Err(e) = self.manifest.validate_for_v0_1() {
