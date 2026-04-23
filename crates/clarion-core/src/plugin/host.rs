@@ -43,7 +43,7 @@ use crate::plugin::limits::{
 };
 use crate::plugin::manifest::{Manifest, ManifestError};
 use crate::plugin::protocol::{
-    AnalyzeFileParams, ExitNotification, InitializeParams, InitializeResult,
+    AnalyzeFileParams, AnalyzeFileResult, ExitNotification, InitializeParams, InitializeResult,
     InitializedNotification, ProtocolError, ResponseEnvelope, ResponsePayload, ShutdownParams,
     make_notification, make_request,
 };
@@ -719,11 +719,27 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
         // so far).
         let result_val = self.read_response_matching(id, "analyze_file")?;
 
-        let entities_raw: Vec<serde_json::Value> = result_val
-            .get("entities")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
+        // Deserialise the result body through the typed AnalyzeFileResult
+        // struct rather than extracting the entities array via
+        // `.get("entities").and_then(as_array).cloned()`. This skips the
+        // intermediate Value-tree clone that used to dominate host-side
+        // RAM at 8 MiB frames. Per-entity malformed handling is preserved:
+        // AnalyzeFileResult's field is Vec<Value>, so each entity is still
+        // turned into RawEntity via `from_value` below and a failure
+        // there yields a FINDING_MALFORMED_ENTITY without aborting the run.
+        let afr: AnalyzeFileResult = match serde_json::from_value(result_val) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(HostError::Protocol(ProtocolError {
+                    code: -32_602,
+                    message: format!(
+                        "analyze_file response did not conform to \
+                         AnalyzeFileResult: {e}"
+                    ),
+                    data: None,
+                }));
+            }
+        };
 
         let plugin_id = self.manifest.plugin.plugin_id.clone();
         let declared_kinds = self.manifest.ontology.entity_kinds.clone();
@@ -731,7 +747,7 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
 
         let mut accepted = Vec::new();
 
-        for raw_val in entities_raw {
+        for raw_val in afr.entities {
             let raw: RawEntity = match serde_json::from_value(raw_val) {
                 Ok(e) => e,
                 Err(e) => {
