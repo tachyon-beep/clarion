@@ -26,9 +26,10 @@ pub use discovery::{DiscoveredPlugin, DiscoveryError, discover, discover_on_path
 pub use host::{AcceptedEntity, HostError, HostFinding, PluginHost};
 pub use jail::{JailError, jail, jail_to_string};
 pub use limits::{
-    BreakerState, CapExceeded, ContentLengthCeiling, DEFAULT_MAX_RSS_MIB, EntityCountCap,
-    FINDING_DISABLED_PATH_ESCAPE, FINDING_ENTITY_CAP, FINDING_FRAME_OVERSIZE, FINDING_OOM_KILLED,
-    FINDING_PATH_ESCAPE, PathEscapeBreaker, apply_prlimit_as, effective_rss_mib,
+    BreakerState, CapExceeded, ContentLengthCeiling, DEFAULT_MAX_NOFILE, DEFAULT_MAX_NPROC,
+    DEFAULT_MAX_RSS_MIB, EntityCountCap, FINDING_DISABLED_PATH_ESCAPE, FINDING_ENTITY_CAP,
+    FINDING_FRAME_OVERSIZE, FINDING_OOM_KILLED, FINDING_PATH_ESCAPE, PathEscapeBreaker,
+    apply_prlimit_as, apply_prlimit_nofile_nproc, effective_rss_mib,
 };
 pub use manifest::{Manifest, ManifestError, parse_manifest};
 // `make_notification` and `make_request` are intentionally omitted —

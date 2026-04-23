@@ -36,9 +36,10 @@ use thiserror::Error;
 use crate::entity_id::{EntityId, EntityIdError, entity_id};
 use crate::plugin::jail::{JailError, jail_to_string};
 use crate::plugin::limits::{
-    BreakerState, CapExceeded, ContentLengthCeiling, DEFAULT_MAX_RSS_MIB, EntityCountCap,
-    FINDING_DISABLED_PATH_ESCAPE, FINDING_ENTITY_CAP, FINDING_OOM_KILLED, FINDING_PATH_ESCAPE,
-    PathEscapeBreaker, apply_prlimit_as, effective_rss_mib,
+    BreakerState, CapExceeded, ContentLengthCeiling, DEFAULT_MAX_NOFILE, DEFAULT_MAX_NPROC,
+    DEFAULT_MAX_RSS_MIB, EntityCountCap, FINDING_DISABLED_PATH_ESCAPE, FINDING_ENTITY_CAP,
+    FINDING_OOM_KILLED, FINDING_PATH_ESCAPE, PathEscapeBreaker, apply_prlimit_as,
+    apply_prlimit_nofile_nproc, effective_rss_mib,
 };
 use crate::plugin::manifest::{Manifest, ManifestError};
 use crate::plugin::protocol::{
@@ -500,11 +501,12 @@ impl
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit());
 
-        // SAFETY: `apply_prlimit_as` calls `setrlimit(2)` which is listed in
-        // POSIX.1-2017 §2.4.3 as async-signal-safe. The `pre_exec` closure
+        // SAFETY: Each `setrlimit` call inside the closure is listed as
+        // async-signal-safe in POSIX.1-2017 §2.4.3. The `pre_exec` closure
         // runs in the forked child after `fork()` but before `exec()`, so
-        // only the child's address-space limit is affected. No Rust allocation
-        // or non-async-signal-safe functions are called inside the closure.
+        // only the child's limits are affected. No Rust allocation, no Drop
+        // and no non-async-signal-safe call occurs inside the closure;
+        // `u64` captures are trivially Copy.
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::process::CommandExt;
@@ -512,9 +514,15 @@ impl
                 manifest.capabilities.runtime.expected_max_rss_mb,
                 DEFAULT_MAX_RSS_MIB,
             );
+            let max_nofile = DEFAULT_MAX_NOFILE;
+            let max_nproc = DEFAULT_MAX_NPROC;
             #[allow(unsafe_code)]
             unsafe {
-                command.pre_exec(move || apply_prlimit_as(rss_mib));
+                command.pre_exec(move || {
+                    apply_prlimit_as(rss_mib)?;
+                    apply_prlimit_nofile_nproc(max_nofile, max_nproc)?;
+                    Ok(())
+                });
             }
         }
 

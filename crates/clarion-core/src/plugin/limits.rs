@@ -272,6 +272,22 @@ pub fn effective_rss_mib(manifest_value: u64, core_default: u64) -> u64 {
     manifest_value.min(core_default)
 }
 
+/// Default file-descriptor ceiling applied to the plugin child. Plugin
+/// work is ingest-style (open, parse, close — one file at a time); the
+/// host's own minimum is much smaller than the shell's usual 1024/65535
+/// `RLIMIT_NOFILE`. 256 covers any realistic concurrent-open pattern a
+/// Sprint 1 plugin needs while preventing fd-flood `DoS` of the host's
+/// own operations (logging, writer-actor `SQLite`).
+pub const DEFAULT_MAX_NOFILE: u64 = 256;
+
+/// Default process/thread ceiling applied to the plugin child. Sprint 1
+/// plugins are single-threaded or run a tight tokio pool; 32 is an
+/// order-of-magnitude ceiling that accommodates legitimate thread-pool
+/// use while stopping fork-bomb / thread-flood `DoS`. Plugins that need
+/// higher can negotiate via manifest extension in a later sprint; for
+/// now the fixed default covers every planned v0.1 consumer.
+pub const DEFAULT_MAX_NPROC: u64 = 32;
+
 /// Apply `RLIMIT_AS` to the current process.
 ///
 /// Called inside `CommandExt::pre_exec` (Task 6) so the limit applies to the
@@ -288,6 +304,31 @@ pub fn apply_prlimit_as(max_rss_mib: u64) -> std::io::Result<()> {
 
     let bytes = max_rss_mib.saturating_mul(1024 * 1024);
     setrlimit(Resource::RLIMIT_AS, bytes, bytes).map_err(std::io::Error::from)
+}
+
+/// Apply `RLIMIT_NOFILE` and `RLIMIT_NPROC` to the current process.
+///
+/// Called from the same `pre_exec` closure as [`apply_prlimit_as`]. Same
+/// async-signal-safety notes apply — `setrlimit` is on the POSIX AS-safe
+/// list, no allocation occurs, no Rust Drop runs. Failure from either
+/// setrlimit returns `Err` and the stdlib `pre_exec` machinery aborts
+/// the child via `_exit` before `exec`.
+///
+/// # Errors
+///
+/// Returns `std::io::Error` on the first `setrlimit` failure.
+#[cfg(target_os = "linux")]
+pub fn apply_prlimit_nofile_nproc(max_nofile: u64, max_nproc: u64) -> std::io::Result<()> {
+    use nix::sys::resource::{Resource, setrlimit};
+
+    setrlimit(Resource::RLIMIT_NOFILE, max_nofile, max_nofile).map_err(std::io::Error::from)?;
+    setrlimit(Resource::RLIMIT_NPROC, max_nproc, max_nproc).map_err(std::io::Error::from)
+}
+
+/// Non-Linux stub for [`apply_prlimit_nofile_nproc`].
+#[cfg(not(target_os = "linux"))]
+pub fn apply_prlimit_nofile_nproc(_max_nofile: u64, _max_nproc: u64) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// No-op stub for non-Linux targets (UQ-WP2-06: Linux-only for Sprint 1).
