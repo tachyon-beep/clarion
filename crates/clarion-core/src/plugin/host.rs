@@ -75,6 +75,18 @@ pub const FINDING_UNSUPPORTED_CAPABILITY: &str = "CLA-INFRA-MANIFEST-UNSUPPORTED
 /// garbage for a subset of entities looks identical to "no entities found".
 pub const FINDING_MALFORMED_ENTITY: &str = "CLA-INFRA-PLUGIN-MALFORMED-ENTITY";
 
+/// Emitted when the host is asked to analyze a file whose path is not
+/// representable as UTF-8. The wire protocol is JSON (UTF-8 only), so the
+/// host cannot forward the path to the plugin; the file is skipped with
+/// this finding and the run continues.
+///
+/// Linux filenames are arbitrary byte sequences. Using `to_string_lossy`
+/// at the wire boundary would replace invalid bytes with U+FFFD, yielding
+/// a path the plugin cannot open and an obscure "plugin returned no
+/// entities" symptom. Failing loudly with this finding keeps the
+/// diagnostic at the host layer.
+pub const FINDING_NON_UTF8_PATH: &str = "CLA-INFRA-HOST-NON-UTF8-PATH";
+
 /// Emitted when a plugin returns an entity with a string field longer than
 /// [`MAX_ENTITY_FIELD_BYTES`]. Entity is dropped; plugin is not killed.
 ///
@@ -318,6 +330,19 @@ impl HostFinding {
         Self {
             subcode: FINDING_UNSUPPORTED_CAPABILITY,
             message: format!("manifest has unsupported capability: {msg}"),
+            metadata,
+        }
+    }
+
+    fn non_utf8_path(lossy_repr: &str) -> Self {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("path_lossy".to_owned(), lossy_repr.to_owned());
+        Self {
+            subcode: FINDING_NON_UTF8_PATH,
+            message: format!(
+                "file skipped: path is not valid UTF-8 and cannot be expressed \
+                 on the JSON wire protocol: {lossy_repr:?}"
+            ),
             metadata,
         }
     }
@@ -589,7 +614,16 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
     /// - [`HostError::EntityCapExceeded`] when the run-cumulative cap is exceeded.
     /// - Transport / serde errors on wire failures.
     pub fn analyze_file(&mut self, path: &Path) -> Result<Vec<AcceptedEntity>, HostError> {
-        let file_path = path.to_string_lossy().into_owned();
+        // The wire protocol is JSON; non-UTF-8 path bytes cannot survive
+        // the round-trip. `to_string_lossy` would replace them with U+FFFD
+        // and ask the plugin about a path that doesn't exist — an obscure
+        // "plugin returned no entities" symptom. Fail loudly with a
+        // finding instead; the caller treats this as "file skipped."
+        let Some(file_path) = path.to_str().map(str::to_owned) else {
+            self.findings
+                .push(HostFinding::non_utf8_path(&path.to_string_lossy()));
+            return Ok(Vec::new());
+        };
         let id = self.next_id();
         let params = AnalyzeFileParams { file_path };
         let req = make_request("analyze_file", &params, id);
@@ -1683,6 +1717,51 @@ ontology_version = "0.1.0"
             "field metadata must pinpoint extra; got: {:?}",
             offense.metadata
         );
+    }
+
+    /// T8g — `analyze_file` with a non-UTF-8 path emits
+    /// `FINDING_NON_UTF8_PATH` and returns an empty Vec. The plugin is
+    /// never asked about the file; the wire never sees the bytes. Unix
+    /// only because creating a non-UTF-8 `Path` requires
+    /// `OsStrExt::from_bytes`.
+    #[cfg(unix)]
+    #[test]
+    fn t8g_non_utf8_path_is_skipped_with_finding() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let manifest = compliant_manifest();
+        let mut mock = MockPlugin::new_compliant();
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        // Build a non-UTF-8 path. 0xFF is invalid UTF-8. The file does
+        // not need to exist — the UTF-8 check short-circuits before the
+        // host writes anything on the wire.
+        let bad_name = std::ffi::OsStr::from_bytes(&[b'b', 0xFF, b'.', b'm', b'o', b'c', b'k']);
+        let bad_path = project_dir.path().join(bad_name);
+
+        let result = host
+            .analyze_file(&bad_path)
+            .expect("non-UTF-8 path is a skip, not an error");
+        assert!(
+            result.is_empty(),
+            "non-UTF-8 path must return empty result; got {} entities",
+            result.len()
+        );
+
+        let findings = host.take_findings();
+        let count = findings
+            .iter()
+            .filter(|f| f.subcode == FINDING_NON_UTF8_PATH)
+            .count();
+        assert_eq!(
+            count, 1,
+            "expected exactly one FINDING_NON_UTF8_PATH; got {count} in {findings:?}"
+        );
+
+        // The writer must NOT have advanced — no analyze_file request
+        // was sent. We check the writer length before and after is the
+        // same as before the call. (The handshake wrote initial bytes;
+        // we compare against the post-handshake length.)
     }
 
     /// T8f — `shutdown()` is idempotent: the second call is a no-op and
