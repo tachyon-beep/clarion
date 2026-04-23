@@ -105,6 +105,16 @@ pub enum DiscoveryError {
     /// refused before it reaches the TOML parser.
     #[error("plugin.toml at {path} exceeded max size {MAX_MANIFEST_BYTES} bytes")]
     ManifestTooLarge { path: PathBuf },
+
+    /// A `$PATH` directory is world-writable. Any user with write
+    /// access could drop a `clarion-plugin-*` binary into it. Refused
+    /// to preserve the ADR-021 "semi-trusted plugin" model — operator
+    /// must deliberately install plugins.
+    #[error(
+        "plugin directory {path} is world-writable and refused for security; \
+         install plugins in a 0o755 directory (~/.local/bin, /usr/local/bin)"
+    )]
+    WorldWritableDir { path: PathBuf },
 }
 
 /// Maximum accepted `plugin.toml` size. Real manifests are well under 2 KiB;
@@ -163,6 +173,17 @@ pub fn discover_on_path(path_env: &OsStr) -> Vec<Result<DiscoveredPlugin, Discov
             Err(_) => dir.clone(),
         };
         if !seen_dirs.insert(canonical_dir.clone()) {
+            continue;
+        }
+
+        // Refuse to load plugins from world-writable directories. On a
+        // multi-user machine, any user with write access to a $PATH dir
+        // becomes a plugin installer — a threat model the hybrid-
+        // authority framing (ADR-021) rules out. Production installs
+        // should use `~/.local/bin` (0o755) or `/usr/local/bin` (0o755);
+        // only pathologically misconfigured dirs fail this check.
+        if is_world_writable(&dir) {
+            results.push(Err(DiscoveryError::WorldWritableDir { path: dir.clone() }));
             continue;
         }
 
@@ -250,6 +271,20 @@ fn is_executable(path: &std::path::Path) -> bool {
         Ok(meta) => meta.is_file() && (meta.permissions().mode() & 0o111 != 0),
         Err(_) => false,
     }
+}
+
+/// Return `true` if `path` has world-write permission set. Returns
+/// `false` on metadata errors (the caller treats unreachable
+/// directories as "skip silently", not "world-writable").
+#[cfg(unix)]
+fn is_world_writable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o002 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_world_writable(_path: &std::path::Path) -> bool {
+    false
 }
 
 /// Load the manifest for a plugin at `exec_path` with binary-name suffix `suffix`.
@@ -562,5 +597,41 @@ ontology_version = "0.1.0"
         let plugin = results.into_iter().next().unwrap().unwrap();
         // Executable must come from dir_a, not dir_b.
         assert_eq!(plugin.executable, dir_a.join("clarion-plugin-dup"));
+    }
+
+    // ── T8: world-writable directory refused ──────────────────────────────────
+
+    /// A `$PATH` directory with world-write permission is refused with
+    /// [`DiscoveryError::WorldWritableDir`] and its contents are not
+    /// scanned. Protects the ADR-021 "semi-trusted plugin" model from
+    /// the multi-user-machine drop-in-evil-binary threat.
+    #[test]
+    fn t8_world_writable_dir_is_refused() {
+        let dir = TempDir::new().unwrap();
+        make_executable(&dir.path().join("clarion-plugin-evil"));
+        fs::write(
+            dir.path().join("plugin.toml"),
+            minimal_manifest_toml("evil"),
+        )
+        .unwrap();
+
+        // Make the dir world-writable.
+        let mut perms = fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o777);
+        fs::set_permissions(dir.path(), perms).unwrap();
+
+        let results = discover_on_path(&path_os(&[dir.path()]));
+        assert_eq!(
+            results.len(),
+            1,
+            "world-writable dir must produce one error"
+        );
+        let err = results.into_iter().next().unwrap().unwrap_err();
+        match err {
+            DiscoveryError::WorldWritableDir { path } => {
+                assert_eq!(path, dir.path(), "error must name the offending dir");
+            }
+            other => panic!("expected WorldWritableDir; got {other:?}"),
+        }
     }
 }
