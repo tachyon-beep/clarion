@@ -186,12 +186,89 @@ impl<'de> Deserialize<'de> for ResponseEnvelope {
 }
 
 /// JSON-RPC 2.0 error object.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// `message` and `data` are truncated at deserialisation time — a plugin
+/// returning multi-MiB error strings inside an 8 MiB frame would otherwise
+/// balloon host RSS as the `ProtocolError` value is cloned through
+/// `HostError::Protocol` and every `?`-propagation.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ProtocolError {
     pub code: i64,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+}
+
+/// Maximum accepted size of [`ProtocolError::message`] and the serialized
+/// form of [`ProtocolError::data`] at the wire boundary. A well-behaved
+/// plugin produces error messages well under 1 KiB; the 4 KiB cap matches
+/// [`crate::plugin::host::MAX_ENTITY_FIELD_BYTES`] and lets a host-emitted
+/// finding safely embed the message without further truncation.
+pub const MAX_PROTOCOL_ERROR_FIELD_BYTES: usize = 4 * 1024;
+
+/// Truncate a string field to [`MAX_PROTOCOL_ERROR_FIELD_BYTES`]. Called on
+/// every deserialisation of a plugin-originated `ProtocolError`.
+fn truncate_for_display(s: String) -> String {
+    if s.len() <= MAX_PROTOCOL_ERROR_FIELD_BYTES {
+        return s;
+    }
+    // Slice on a char boundary at-or-before the cap. UTF-8 safety: walk
+    // backwards from the cap index until we find a boundary.
+    let mut end = MAX_PROTOCOL_ERROR_FIELD_BYTES;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = String::with_capacity(end + 4);
+    out.push_str(&s[..end]);
+    out.push_str("...");
+    out
+}
+
+impl<'de> Deserialize<'de> for ProtocolError {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Go via an intermediate raw form so we can post-process each field
+        // before holding the full-size copy in the `ProtocolError` value.
+        #[derive(Deserialize)]
+        struct Raw {
+            code: i64,
+            message: String,
+            #[serde(default)]
+            data: Option<Value>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+
+        // Truncate `message` to the cap.
+        let message = truncate_for_display(raw.message);
+
+        // For `data`: if it's a string, truncate in place. Otherwise, cap
+        // its serialised byte length — a deeply-nested or wide `Value`
+        // tree at 8 MiB would otherwise survive past the frame ceiling.
+        let data = match raw.data {
+            None => None,
+            Some(Value::String(s)) => Some(Value::String(truncate_for_display(s))),
+            Some(v) => {
+                let bytes = serde_json::to_vec(&v).map_err(de::Error::custom)?;
+                if bytes.len() <= MAX_PROTOCOL_ERROR_FIELD_BYTES {
+                    Some(v)
+                } else {
+                    // Replace with a string-shaped marker preserving the
+                    // shape-kind so operators can see "there was a data
+                    // field but it was too large."
+                    Some(Value::String(format!(
+                        "<truncated: {} bytes exceeded {} byte cap>",
+                        bytes.len(),
+                        MAX_PROTOCOL_ERROR_FIELD_BYTES,
+                    )))
+                }
+            }
+        };
+
+        Ok(ProtocolError {
+            code: raw.code,
+            message,
+            data,
+        })
+    }
 }
 
 // ── Method-level param and result structs ─────────────────────────────────────
@@ -556,6 +633,48 @@ mod tests {
             msg.contains("both"),
             "error message should mention `both` fields present; got: {msg}"
         );
+    }
+
+    #[test]
+    fn proto_protocol_error_message_truncated_at_deserialise() {
+        // A plugin returning a pathological multi-MiB message must not
+        // balloon host RSS via the ProtocolError clone path.
+        let huge = "x".repeat(MAX_PROTOCOL_ERROR_FIELD_BYTES * 4);
+        let raw = serde_json::json!({
+            "code": -32_600,
+            "message": huge,
+        });
+        let err: ProtocolError = serde_json::from_value(raw).expect("must deserialise");
+        assert!(
+            err.message.len() <= MAX_PROTOCOL_ERROR_FIELD_BYTES + 4,
+            "message must be truncated; got {} bytes",
+            err.message.len()
+        );
+        assert!(
+            err.message.ends_with("..."),
+            "truncated message must end with ellipsis; got: {:?}",
+            &err.message[err.message.len().saturating_sub(10)..]
+        );
+    }
+
+    #[test]
+    fn proto_protocol_error_data_replaced_when_over_cap() {
+        // `data` is an arbitrary JSON Value; when its serialised form
+        // exceeds the cap, it's replaced with a marker string rather
+        // than the full payload.
+        let big_array: Vec<String> = (0..2000).map(|i| format!("entry_{i}")).collect();
+        let raw = serde_json::json!({
+            "code": -32_600,
+            "message": "err",
+            "data": big_array,
+        });
+        let err: ProtocolError = serde_json::from_value(raw).expect("must deserialise");
+        match err.data {
+            Some(Value::String(s)) => {
+                assert!(s.starts_with("<truncated:"), "got: {s}");
+            }
+            other => panic!("data must be replaced with truncation marker; got {other:?}"),
+        }
     }
 
     #[test]
