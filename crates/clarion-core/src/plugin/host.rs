@@ -385,6 +385,11 @@ where
     path_breaker: PathEscapeBreaker,
     next_request_id: i64,
     findings: Vec<HostFinding>,
+    /// Set after the first successful `do_shutdown` or after a kill-path
+    /// shutdown in `analyze_file` (breaker trip / entity-cap exceeded).
+    /// A second `shutdown()` call becomes a no-op rather than writing to
+    /// a closed pipe and surfacing a spurious `BrokenPipe` error.
+    terminated: bool,
 }
 
 // ── Subprocess constructor ────────────────────────────────────────────────────
@@ -508,6 +513,7 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
             path_breaker: PathEscapeBreaker::new_default(),
             next_request_id: 1,
             findings: Vec::new(),
+            terminated: false,
         }
     }
 
@@ -736,13 +742,19 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
     ///
     /// Returns transport / serde errors if the shutdown exchange fails.
     ///
-    /// # Note
+    /// # Idempotency
     ///
-    /// Must not be called after `analyze_file` returns `PathEscapeBreakerTripped`
-    /// or `EntityCapExceeded` — the plugin has already been shut down by the
-    /// host; calling `shutdown()` again writes to a closed pipe and returns
-    /// `HostError::Transport(Io(BrokenPipe))`.
+    /// Idempotent under repeat calls. The first call runs the shutdown
+    /// exchange; subsequent calls return `Ok(())` without writing to a
+    /// closed pipe. `analyze_file`'s internal kill paths
+    /// (`PathEscapeBreakerTripped`, `EntityCapExceeded`, manifest
+    /// capability refusal) also tick the same guard, so CLI wrappers that
+    /// defensively call `shutdown()` after an `analyze_file` error no
+    /// longer surface spurious `HostError::Transport(Io(BrokenPipe))`.
     pub fn shutdown(&mut self) -> Result<(), HostError> {
+        if self.terminated {
+            return Ok(());
+        }
         self.do_shutdown()
     }
 
@@ -792,6 +804,13 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
     }
 
     fn do_shutdown(&mut self) -> Result<(), HostError> {
+        // Mark terminated up front so that even if the shutdown exchange
+        // fails mid-way (plugin hung, broken pipe), subsequent shutdown()
+        // calls become no-ops rather than attempting another write and
+        // returning BrokenPipe. A partially-failed shutdown still leaves
+        // the plugin in an unusable state; retrying only produces noise.
+        self.terminated = true;
+
         let id = self.next_id();
         let req = make_request("shutdown", &ShutdownParams {}, id);
         let body = serde_json::to_vec(&req)?;
@@ -1664,6 +1683,76 @@ ontology_version = "0.1.0"
             "field metadata must pinpoint extra; got: {:?}",
             offense.metadata
         );
+    }
+
+    /// T8f — `shutdown()` is idempotent: the second call is a no-op and
+    /// does not write to the closed pipe. Structural guard for the
+    /// documented not-after-analyze-file-kill-path contract; before this
+    /// fix the doc-comment was the only protection.
+    #[test]
+    fn t8f_shutdown_is_idempotent_after_analyze_file_kill_path() {
+        // Pre-seed the mock with 11 escaping entities + a shutdown
+        // response so that analyze_file trips the path-escape breaker
+        // (which internally calls do_shutdown) and a subsequent
+        // user-visible shutdown() call then returns Ok without any
+        // further wire traffic.
+        let manifest = compliant_manifest();
+        let mut mock = MockPlugin::new_escaping_path(11);
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        let sample = project_dir.path().join("sample.mock");
+        std::fs::write(&sample, b"").unwrap();
+
+        {
+            let req = crate::plugin::protocol::make_request(
+                "analyze_file",
+                &AnalyzeFileParams {
+                    file_path: sample.to_string_lossy().into_owned(),
+                },
+                host.next_request_id_test(),
+            );
+            let body = serde_json::to_vec(&req).unwrap();
+            write_frame(mock.stdin(), &Frame { body }).unwrap();
+            mock.tick().expect("tick analyze_file");
+        }
+        let analyze_bytes = drain_mock_output(&mut mock);
+
+        let shutdown_id = host.next_request_id_test() + 1;
+        {
+            let req =
+                crate::plugin::protocol::make_request("shutdown", &ShutdownParams {}, shutdown_id);
+            let body = serde_json::to_vec(&req).unwrap();
+            write_frame(mock.stdin(), &Frame { body }).unwrap();
+            mock.tick().expect("tick shutdown");
+        }
+        let shutdown_bytes = drain_mock_output(&mut mock);
+
+        let mut all = analyze_bytes;
+        all.extend_from_slice(&shutdown_bytes);
+        {
+            let reader = host.reader_mut_test();
+            let pos_before = reader.position();
+            let old_end = reader.get_ref().len() as u64;
+            reader.get_mut().extend_from_slice(&all);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
+        }
+
+        // Breaker-trip inside analyze_file already ran do_shutdown once.
+        let _ = host
+            .analyze_file(&sample)
+            .expect_err("breaker must trip on 11th escape");
+
+        // Second shutdown() is a no-op (no additional write_frame, no
+        // BrokenPipe). Previously this would have returned
+        // HostError::Transport(Io(BrokenPipe)).
+        host.shutdown()
+            .expect("idempotent shutdown after analyze_file kill path must not error");
+
+        // Third shutdown for good measure.
+        host.shutdown()
+            .expect("idempotent shutdown (second extra call) must not error");
     }
 
     // ── T9: entity-cap kills the plugin and returns EntityCapExceeded ────────
