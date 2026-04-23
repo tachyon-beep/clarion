@@ -425,6 +425,50 @@ where
     /// that the field is present and non-empty — semver comparison is
     /// WP6's job.
     ontology_version: Option<String>,
+    /// Bounded ring buffer holding the tail of the plugin's stderr. The
+    /// subprocess `spawn` constructor populates this from a detached
+    /// drain thread; the in-process `connect` constructor leaves it
+    /// `None`. Capacity is [`STDERR_TAIL_BYTES`]; oldest bytes are
+    /// discarded on overflow so the plugin cannot back-pressure the host
+    /// via stderr writes.
+    stderr_tail: Option<std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>>,
+}
+
+/// Size of the stderr ring buffer kept for diagnostics. 64 KiB holds
+/// ~800 lines of plugin output — enough for any realistic diagnostic
+/// tail while capping the plugin's ability to exfiltrate or `DoS` via
+/// stderr volume.
+pub const STDERR_TAIL_BYTES: usize = 64 * 1024;
+
+/// Detached-thread body that reads the plugin's stderr in small chunks
+/// and appends to the ring buffer, discarding oldest bytes on overflow.
+/// Exits cleanly on EOF (child closes stderr) or on any read error.
+#[cfg(unix)]
+fn drain_stderr_into_ring(
+    mut stderr: std::process::ChildStderr,
+    ring: &std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>,
+) {
+    use std::io::Read;
+    let mut buf = [0u8; 4096];
+    loop {
+        match stderr.read(&mut buf) {
+            Ok(0) => break, // EOF
+            Ok(n) => {
+                if let Ok(mut ring) = ring.lock() {
+                    for &b in &buf[..n] {
+                        if ring.len() >= STDERR_TAIL_BYTES {
+                            ring.pop_front();
+                        }
+                        ring.push_back(b);
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                // Retry the read.
+            }
+            Err(_) => break,
+        }
+    }
 }
 
 // ── Subprocess constructor ────────────────────────────────────────────────────
@@ -499,7 +543,18 @@ impl
         command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit());
+            // Pipe stderr rather than inheriting: a hostile or buggy plugin
+            // writing gigabytes to stderr would otherwise flood the
+            // operator's terminal / CI log, and (if stderr is a pipe that
+            // isn't being drained) deadlock the plugin on write(2) while
+            // the host waits on analyze_file. The stderr drainer (below)
+            // reads into a bounded ring buffer and discards on overflow,
+            // so the plugin never blocks on stderr writes regardless of
+            // volume. Tail is retrievable via `stderr_tail()` for
+            // diagnostics — it is NOT forwarded to the operator's stdout/
+            // stderr verbatim, so ANSI escape / log-line-injection tricks
+            // cannot spoof host output.
+            .stderr(std::process::Stdio::piped());
 
         // SAFETY: Each `setrlimit` call inside the closure is listed as
         // async-signal-safe in POSIX.1-2017 §2.4.3. The `pre_exec` closure
@@ -538,6 +593,27 @@ impl
             .stdout
             .take()
             .ok_or_else(|| HostError::Spawn("no stdout handle".to_owned()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| HostError::Spawn("no stderr handle".to_owned()))?;
+
+        // Drain stderr on a detached thread into a bounded ring buffer.
+        // The thread exits cleanly on EOF (child closes stderr). Oldest
+        // bytes are discarded on overflow so the plugin never blocks on
+        // stderr writes regardless of volume.
+        let stderr_tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<u8>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::VecDeque::with_capacity(STDERR_TAIL_BYTES),
+            ));
+        let stderr_tail_for_thread = std::sync::Arc::clone(&stderr_tail);
+        std::thread::Builder::new()
+            .name(format!(
+                "clarion-plugin-stderr-drain:{}",
+                manifest.plugin.plugin_id
+            ))
+            .spawn(move || drain_stderr_into_ring(stderr, &stderr_tail_for_thread))
+            .map_err(|e| HostError::Spawn(format!("spawn stderr drain thread: {e}")))?;
 
         let mut host = PluginHost::new_inner(
             manifest,
@@ -545,6 +621,7 @@ impl
             std::io::BufReader::new(stdout),
             std::io::BufWriter::new(stdin),
         );
+        host.stderr_tail = Some(stderr_tail);
 
         // Reap on handshake failure. `std::process::Child::Drop` does NOT
         // waitpid on Unix, so returning Err while `child` goes out of scope
@@ -601,7 +678,24 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
             findings: Vec::new(),
             terminated: false,
             ontology_version: None,
+            stderr_tail: None,
         }
+    }
+
+    /// Return the captured plugin stderr tail as a lossy-UTF-8 string.
+    ///
+    /// Returns `None` for hosts constructed via the in-process `connect`
+    /// helper (no real stderr) or `Some(String)` for subprocess-backed
+    /// hosts. The string is lossy-UTF-8 because plugin stderr is not
+    /// guaranteed to be valid UTF-8; a runaway plugin could emit binary
+    /// bytes. Callers typically attach this to findings for operator
+    /// diagnostics — do not forward verbatim to the operator's terminal
+    /// (the escape/log-injection threat is exactly why stderr is piped).
+    pub fn stderr_tail(&self) -> Option<String> {
+        let ring = self.stderr_tail.as_ref()?;
+        let guard = ring.lock().ok()?;
+        let bytes: Vec<u8> = guard.iter().copied().collect();
+        Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// Ontology version advertised by the plugin during handshake.

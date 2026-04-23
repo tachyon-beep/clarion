@@ -188,6 +188,36 @@ fn t9_handshake_failure_on_immediate_exit_returns_err_promptly() {
     );
 }
 
+/// T9b: `stderr_tail()` is wired on subprocess-backed hosts. The fixture
+/// plugin does not write to stderr on the happy path, so the tail is
+/// `Some("")` or `Some(<small>)`; the key assertion is that it's `Some`
+/// (not `None`) — the drain thread is attached and reachable. `None`
+/// after spawn would indicate the stderr ring was never installed.
+#[test]
+#[cfg(unix)]
+fn t9b_stderr_tail_is_some_after_spawn() {
+    let manifest = parse_manifest(FIXTURE_MANIFEST_BYTES).expect("fixture manifest must parse");
+    let project_dir = tempfile::TempDir::new().expect("tmpdir");
+    let sample_path = project_dir.path().join("sample.mt");
+    std::fs::write(&sample_path, b"widget demo.sample {}\n").expect("write sample.mt");
+
+    let exec = fixture_binary_path();
+    let (mut host, mut child) =
+        PluginHost::spawn(manifest, project_dir.path(), &exec).expect("spawn must succeed");
+
+    // The tail must be Some — drain thread is wired. Content may vary
+    // (the fixture doesn't write to stderr on success paths, so empty
+    // is expected).
+    let tail = host.stderr_tail();
+    assert!(
+        tail.is_some(),
+        "subprocess host must expose Some(stderr_tail); got None"
+    );
+
+    host.shutdown().expect("shutdown");
+    let _ = child.wait();
+}
+
 /// T10: `PluginHost::spawn` refuses a manifest whose `plugin.executable`
 /// contains a path separator. A compromised `plugin.toml` must not be
 /// able to redirect execution to `/bin/sh`, `python3`, or a relative
