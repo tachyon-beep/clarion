@@ -291,17 +291,34 @@ New workspace dependencies introduced by WP2:
 
 ## 5. Unresolved questions
 
-- **UQ-WP2-01** — **Plugin discovery convention (L9)**: proposal is PATH + manifest
-  beside binary; see §2. **Resolution by**: Task 5.
-- **UQ-WP2-02** — **JSON-RPC library choice**: hand-rolled over `serde_json` vs
-  `jsonrpsee` (async, batteries-included) vs `jsonrpc-core` (mature but older).
-  Hand-rolled wins on dep-surface; `jsonrpsee` wins on feature set (batching,
-  bidirectional notifications). Walking skeleton uses unidirectional unary → hand-roll
-  is enough. **Proposal**: hand-roll. **Resolution by**: Task 2.
-- **UQ-WP2-03** — **Path jail semantics**: does canonicalisation follow symlinks? If
-  yes, a symlink pointing outside the analysis root is rejected. If no, a symlink
-  *within* the root that resolves outside is silently admitted. **Proposal**: yes,
-  follow symlinks; reject-on-escape. **Resolution by**: Task 4.
+- **UQ-WP2-01** — **Plugin discovery convention (L9)**: ~~open~~ —
+  **resolved as PATH + neighbouring `plugin.toml`** per the §2 L9 proposal.
+  `discovery::discover_plugins` scans `$PATH` entries for
+  `clarion-plugin-*` basenames and loads `plugin.toml` from next to the
+  binary (install-prefix fallback deferred — WP3's `pip install -e` places
+  both binary and manifest in the same venv `bin/` directory, so the
+  fallback path has no Sprint-1 surface). World-writable `$PATH` entries
+  are refused at discovery time (`DiscoveryError::WorldWritableDir`;
+  scrub commit `7c0e396`). **Resolved**: Task 5 / `plugin::discovery`.
+- **UQ-WP2-02** — **JSON-RPC library choice**: ~~open~~ —
+  **resolved as hand-rolled over `serde_json`** per the §UQ-WP2-02
+  proposal. `transport.rs` owns Content-Length framing + frame read/write;
+  `protocol.rs` owns typed request/response structs for the L4 method set.
+  No `jsonrpsee` / `jsonrpc-core` dep added. **Resolved**: Task 2 /
+  `plugin::{transport, protocol}`.
+- **UQ-WP2-03** — **Path jail semantics**: ~~open~~ —
+  **resolved as symlink-following `canonicalize` + `starts_with`** per the
+  §UQ-WP2-03 proposal. `jail::jail` canonicalises both root and candidate
+  via `std::fs::canonicalize` (which follows symlinks) and rejects any
+  candidate whose canonical form escapes the canonical root with
+  `JailError::EscapedRoot`. A symlink *within* the root that resolves
+  outside is rejected; a non-existent path is rejected. Caller-decides
+  drop-vs-kill policy (per ADR-021 §2a: drop-entity-not-plugin on first
+  offense; sub-breaker kills on >10/60s). **Note**: this is canonicalize-time
+  only — TOCTOU window for any downstream code that re-opens the path is
+  tracked in `clarion-928349b60f` and becomes critical when WP6 briefing
+  code reads `AcceptedEntity.source_file_path`. **Resolved**: Task 4 /
+  `plugin::jail`.
 - **UQ-WP2-04** — **Content-Length ceiling default**: ~~open~~ —
   **resolved by ADR-021 §2b**. Default ceiling is **8 MiB** per frame,
   floor 1 MiB, config key `clarion.yaml:plugin_limits.max_frame_bytes`
@@ -317,46 +334,58 @@ New workspace dependencies introduced by WP2:
   On exceed: current in-flight batch flushed, plugin killed, run enters
   partial-results state, `CLA-INFRA-PLUGIN-ENTITY-CAP` emitted.
   **Resolved**: Task 4.
-- **UQ-WP2-06** — **prlimit on non-Linux**: ADR-021 §2d names both paths
-  (`prlimit(RLIMIT_AS)` on Linux, `setrlimit(RLIMIT_AS)` on macOS — both
-  POSIX). Sprint 1 scope is **Linux-only** per
-  [WP1 §1 "Explicitly out of scope"](./wp1-scaffold.md#1-scope-sprint-1-narrow),
-  so the macOS path described in ADR-021 is out of scope *for Sprint 1
-  implementation* even though it's in scope *for the ADR*. Do we
-  `#[cfg(target_os = "linux")]` the enforcement or compile an error?
-  **Proposal**: `#[cfg]`-gate the Linux implementation; on non-Linux, log
-  a warning once and proceed without the limit (the ADR-021 §2d macOS
-  path lands when Sprint N adds macOS support). **Resolution by**: Task 4.
-- **UQ-WP2-07** — **Shape of plugin non-entity output**: does the plugin write progress
-  updates to stderr (free-form, the host just tees it to `tracing::info!`) or via JSON-RPC
-  notifications (`$/progress`)? Walking skeleton doesn't need progress, but the
-  convention is a lock-in-by-omission if not decided. **Proposal**: stderr is
-  free-form and forwarded to tracing; progress notifications are deferred. Plugins
-  that need structured progress add it in a later sprint. **Resolution by**: Task 3.
-- **UQ-WP2-08** — **Plugin stdout discipline**: plugins must use stdout for JSON-RPC
-  only. Stray `print()` statements in a Python plugin will corrupt framing. How do
-  we enforce? **Proposal**: document in the WP3 plugin-author guide; the Python
-  plugin bootstraps by replacing `sys.stdout` with a non-writable wrapper during
-  initialisation. Not a core enforcement; plugin-level discipline. **Resolution by**:
-  Task 3 (documented in plugin-author docs).
-- **UQ-WP2-09** — **Manifest hot-reload**: should the host re-read the manifest on
-  each analyze run, or cache it across runs within one `serve` session? Sprint 1 only
-  has `analyze`, so always-reload is simplest. **Proposal**: always-reload in Sprint 1;
-  revisit at WP8. **Resolution by**: Task 2.
+- **UQ-WP2-06** — **prlimit on non-Linux**: ~~open~~ —
+  **resolved as `#[cfg(target_os = "linux")]`-gated enforcement**.
+  `limits::apply_prlimit_as` (plus `apply_prlimit_nofile_nproc` from
+  scrub commit `bd92600`) are Linux-only; non-Linux targets log once at
+  spawn and proceed without the RSS / fd / proc limits. macOS
+  `setrlimit` path per ADR-021 §2d lands when a future sprint adds macOS
+  support (Sprint 1 scope is Linux-only per WP1 §1). **Resolved**:
+  Task 4 / `plugin::limits`.
+- **UQ-WP2-07** — **Shape of plugin non-entity output**: ~~open~~ —
+  **resolved as captured stderr ring buffer (diverges from original
+  proposal)**. Plugin stderr is piped (not inherited) into a bounded
+  64 KiB ring buffer on `PluginHost`, accessible via
+  `host.stderr_tail() -> Option<String>` for diagnostics (scrub commit
+  `b3c91a7`). This is a narrower surface than the original "tee to
+  `tracing::info!`" proposal — the scrub narrowed it because an
+  unbounded tee lets a chatty plugin flood core-side log drains.
+  Structured progress notifications (`$/progress`) are deferred to a
+  later sprint as originally planned. **Resolved**: Task 3 + scrub /
+  `plugin::host` (`stderr_tail`).
+- **UQ-WP2-08** — **Plugin stdout discipline**: ~~open~~ —
+  **resolved as plugin-level discipline, not core enforcement**. WP2
+  does not intercept plugin stdout; WP3's Python plugin will bootstrap
+  by replacing `sys.stdout` with a non-writable wrapper during
+  initialisation (stray `print()` would otherwise corrupt framing). The
+  host is resilient to unexpected frames via the drain-until-match loop
+  (`MAX_DRAIN_FRAMES = 16`, scrub commit `769a177`), so stdout
+  violations surface as framing / drain-budget errors rather than
+  silent corruption. **Resolved**: Task 3 (WP2 side — no core
+  enforcement); deferred to WP3 for the Python plugin's stdout swap.
+- **UQ-WP2-09** — **Manifest hot-reload**: ~~open~~ —
+  **resolved as always-reload in Sprint 1**. `discovery::discover_plugins`
+  is invoked once per `clarion analyze` run and re-reads every
+  `plugin.toml` from disk; no in-memory manifest cache is carried across
+  runs. Manifest cache-across-`serve`-sessions is a WP8 concern. **Resolved**:
+  Task 2 / Task 5 (`plugin::{manifest, discovery}`).
 - **UQ-WP2-10** — **Crash-loop breaker parameters**: ~~open~~ —
   **resolved by ADR-002 + ADR-021 §Layer 3**. General breaker:
   **>3 crashes in 60s** → plugin disabled, `CLA-INFRA-PLUGIN-DISABLED-CRASH-LOOP`.
   Path-escape sub-breaker (ADR-021 §2a): **>10 escapes in 60s** → plugin
   killed, `CLA-INFRA-PLUGIN-DISABLED-PATH-ESCAPE`. Sprint 1 hard-codes both
   thresholds; config surface deferred to WP6. **Resolved**: Task 7.
-- **UQ-WP2-11** — **What happens if the plugin returns an `id` that doesn't
-  match the 3-segment L2 format?** **Proposal**: host validates by
-  reconstructing the `EntityId` from the entity's `plugin_id` (known — the
-  emitting plugin), `kind`, and `qualified_name` fields and comparing against
-  the returned `id`; mismatch = drop entity + emit
-  `CLA-INFRA-PLUGIN-ENTITY-ID-MISMATCH`. This is the ontology-boundary
-  enforcement (ADR-022) extended to the identity format (ADR-003).
-  **Resolution by**: Task 6.
+- **UQ-WP2-11** — **Plugin-returned `id` vs 3-segment L2 format**: ~~open~~ —
+  **resolved by identity check in `plugin::host` (T4)** per the §UQ-WP2-11
+  proposal. On every `analyze_file` response, the host reconstructs the
+  expected `EntityId` from `(plugin_id, kind, qualified_name)` and compares
+  against the returned `id`; on mismatch the entity is dropped and
+  `CLA-INFRA-PLUGIN-ENTITY-ID-MISMATCH` is emitted. This extends ADR-022
+  ontology-boundary enforcement to the ADR-003 identity format. The
+  host-level T4 test plus `cross_plugin_plugin_id_spoof_is_rejected`
+  (scrub commit `89b2da0`) cover both the shape-mismatch and cross-plugin
+  spoof attack surfaces. **Resolved**: Task 6 + scrub / `plugin::host`
+  (T4, `cross_plugin_plugin_id_spoof_is_rejected`).
 
 ## 6. Task ledger
 
