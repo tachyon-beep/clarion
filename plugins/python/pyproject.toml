@@ -35,11 +35,12 @@ clarion-plugin-python = "clarion_plugin_python.__main__:main"
 packages = ["src/clarion_plugin_python"]
 
 [tool.hatch.build.targets.wheel.shared-data]
-# Route plugin.toml into <install-prefix>/share/clarion/plugins/... so WP2's
-# L9 discovery fallback (next-to-binary first, install-prefix/share/ second)
-# finds it without ceremony. pip install -e exposes the same layout via the
-# wheel's data directory.
-"plugin.toml" = "share/clarion/plugins/clarion-plugin-python/plugin.toml"
+# Route plugin.toml into <install-prefix>/share/clarion/plugins/<suffix>/ so
+# WP2's L9 install-prefix fallback finds it. The <suffix> is produced by
+# `discovery.rs::strip_prefix("clarion-plugin-")` on the binary name, so for
+# clarion-plugin-python the suffix is "python" — the target directory must
+# match that basename exactly.
+"plugin.toml" = "share/clarion/plugins/python/plugin.toml"
 
 [tool.ruff]
 target-version = "py311"

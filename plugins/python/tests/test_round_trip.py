@@ -121,10 +121,12 @@ def test_round_trip_self_analysis() -> None:
         assert "python:function:clarion_plugin_python.extractor._walk" in ids
         assert "python:function:clarion_plugin_python.extractor._build_entity" in ids
 
-        # Every entity should carry kind="function" and the module_path we sent.
+        # Every entity should carry kind="function" and the absolute
+        # source.file_path we sent (project_root relativisation only affects
+        # the qualified_name prefix, not source.file_path).
         for entity in entities:
             assert entity["kind"] == "function"
-            assert entity["module_path"] == "clarion_plugin_python/extractor.py"
+            assert entity["source"]["file_path"] == str(target)
 
         # Graceful shutdown.
         proc.stdin.write(

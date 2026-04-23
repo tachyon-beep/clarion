@@ -5,23 +5,31 @@ Walks a parsed Python file and emits one entity per ``FunctionDef`` /
 import/call edge emission is WP3-feature-complete scope and deliberately
 out of band here.
 
-Entity shape matches the Rust fixture plugin's wire layout
-(``crates/clarion-plugin-fixture/src/main.rs``)::
+Entity shape matches the Rust host's ``RawEntity`` + ``RawSource``
+contract (``crates/clarion-core/src/plugin/host.rs:132-154``)::
 
     {
         "id": "python:function:...",
         "kind": "function",
         "qualified_name": "pkg.module.func",
-        "module_path": "pkg/module.py",
-        "source_range": {
-            "start_line": 1, "start_col": 0,
-            "end_line": 3, "end_col": 4,
+        "source": {
+            "file_path": "pkg/module.py",
+            "source_range": {
+                "start_line": 1, "start_col": 0,
+                "end_line": 3, "end_col": 4,
+            },
         },
     }
 
-``qualified_name`` is the dotted module prefix joined to Python's own
-``__qualname__`` (reconstructed per L7). ``module_path`` is an entity
-*property*, not part of the ID (ADR-003).
+``source.file_path`` lands in the host's path jail (canonicalised +
+checked against ``project_root``); any other source-side fields flow
+through ``RawSource.extra`` (serde flatten) and are bounded by
+``MAX_ENTITY_EXTRA_BYTES`` (64 KiB). ``qualified_name`` is the dotted
+module prefix joined to Python's own ``__qualname__`` (reconstructed
+per L7). The file_path passed on the wire may be absolute (what the
+host sent) while the prefix used for qualified-name dotting can be the
+relativised form — the two are decoupled via ``extract``'s
+``module_prefix_path`` kwarg.
 
 Behaviour:
 
@@ -75,20 +83,33 @@ def module_dotted_name(module_path: str) -> str:
     return ".".join(parts)
 
 
-def extract(source: str, module_path: str) -> list[dict[str, Any]]:
-    """Return a list of function entities extracted from ``source``."""
+def extract(
+    source: str,
+    file_path: str,
+    *,
+    module_prefix_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return a list of function entities extracted from ``source``.
+
+    ``file_path`` lands in each entity's ``source.file_path`` verbatim.
+    ``module_prefix_path`` (default: same as ``file_path``) is the path
+    whose dotted form prefixes every entity's ``qualified_name`` — callers
+    can supply a project-relative path here while keeping ``file_path``
+    absolute so the host's path jail validates the original path.
+    """
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
         sys.stderr.write(
-            f"clarion-plugin-python: skipping {module_path}: syntax error at "
+            f"clarion-plugin-python: skipping {file_path}: syntax error at "
             f"line {exc.lineno}: {exc.msg}\n",
         )
         return []
 
-    dotted_module = module_dotted_name(module_path)
+    prefix_source = module_prefix_path if module_prefix_path is not None else file_path
+    dotted_module = module_dotted_name(prefix_source)
     entities: list[dict[str, Any]] = []
-    _walk(tree, [tree], dotted_module, module_path, entities)
+    _walk(tree, [tree], dotted_module, file_path, entities)
     return entities
 
 
@@ -96,20 +117,20 @@ def _walk(
     node: ast.AST,
     parents: list[ast.AST],
     dotted_module: str,
-    module_path: str,
+    file_path: str,
     out: list[dict[str, Any]],
 ) -> None:
     for child in ast.iter_child_nodes(node):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            out.append(_build_entity(child, parents, dotted_module, module_path))
-        _walk(child, [*parents, child], dotted_module, module_path, out)
+            out.append(_build_entity(child, parents, dotted_module, file_path))
+        _walk(child, [*parents, child], dotted_module, file_path, out)
 
 
 def _build_entity(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     parents: list[ast.AST],
     dotted_module: str,
-    module_path: str,
+    file_path: str,
 ) -> dict[str, Any]:
     python_qualname = reconstruct_qualname(node, parents)
     qualified_name = f"{dotted_module}.{python_qualname}" if dotted_module else python_qualname
@@ -119,11 +140,13 @@ def _build_entity(
         "id": entity_id(_PLUGIN_ID, _KIND, qualified_name),
         "kind": _KIND,
         "qualified_name": qualified_name,
-        "module_path": module_path,
-        "source_range": {
-            "start_line": node.lineno,
-            "start_col": node.col_offset,
-            "end_line": end_line,
-            "end_col": end_col,
+        "source": {
+            "file_path": file_path,
+            "source_range": {
+                "start_line": node.lineno,
+                "start_col": node.col_offset,
+                "end_line": end_line,
+                "end_col": end_col,
+            },
         },
     }

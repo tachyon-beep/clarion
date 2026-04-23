@@ -26,9 +26,9 @@ def test_module_level_function() -> None:
     assert entity["id"] == "python:function:demo.hello"
     assert entity["kind"] == "function"
     assert entity["qualified_name"] == "demo.hello"
-    assert entity["module_path"] == "demo.py"
-    assert entity["source_range"]["start_line"] == 1
-    assert entity["source_range"]["start_col"] == 0
+    assert entity["source"]["file_path"] == "demo.py"
+    assert entity["source"]["source_range"]["start_line"] == 1
+    assert entity["source"]["source_range"]["start_col"] == 0
 
 
 def test_class_method() -> None:
@@ -78,12 +78,24 @@ def test_src_prefix_stripped() -> None:
 def test_init_py_collapsed_to_package_name() -> None:
     """UQ-WP3-06: `pkg/__init__.py` → dotted `pkg` (not `pkg.__init__`).
 
-    ``module_path`` stays as the literal file path; the dotted module
+    ``source.file_path`` stays as the literal file path; the dotted module
     used for qualified_name is the package name only.
     """
     entities = extract("def pkg_helper():\n    pass\n", "pkg/__init__.py")
     assert entities[0]["qualified_name"] == "pkg.pkg_helper"
-    assert entities[0]["module_path"] == "pkg/__init__.py"
+    assert entities[0]["source"]["file_path"] == "pkg/__init__.py"
+
+
+def test_module_prefix_path_decouples_file_path_and_dotted_prefix() -> None:
+    """server passes absolute file_path + relativised module_prefix_path."""
+    entities = extract(
+        "def hello():\n    pass\n",
+        "/tmp/proj/demo.py",
+        module_prefix_path="demo.py",
+    )
+    assert entities[0]["source"]["file_path"] == "/tmp/proj/demo.py"
+    assert entities[0]["id"] == "python:function:demo.hello"
+    assert entities[0]["qualified_name"] == "demo.hello"
 
 
 def test_module_dotted_name_helper() -> None:
@@ -96,7 +108,7 @@ def test_module_dotted_name_helper() -> None:
 
 def test_source_range_end_fields_populated() -> None:
     entities = extract("def f():\n    pass\n", "d.py")
-    source_range = entities[0]["source_range"]
+    source_range = entities[0]["source"]["source_range"]
     assert source_range["start_line"] == 1
     assert source_range["start_col"] == 0
     assert source_range["end_line"] == 2

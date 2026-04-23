@@ -183,8 +183,13 @@ def handle_analyze_file(params: dict[str, Any], state: ServerState) -> dict[str,
     except (OSError, UnicodeDecodeError) as exc:
         sys.stderr.write(f"clarion-plugin-python: cannot read {file_path_raw}: {exc}\n")
         return {"entities": []}
-    module_path = _resolve_module_path(file_path_raw, state)
-    return {"entities": extract(source, module_path)}
+    # Emit source.file_path exactly as received so the host's jail check
+    # (which canonicalises against project_root) sees the original path.
+    # Derive qualified-name dotting from the project-relative form.
+    module_prefix = _resolve_module_path(file_path_raw, state)
+    return {
+        "entities": extract(source, file_path_raw, module_prefix_path=module_prefix),
+    }
 
 
 Handler = Callable[[dict[str, Any], ServerState], dict[str, Any]]
