@@ -12,7 +12,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from typing import IO, Any
+import textwrap
+from typing import IO, TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Invoke via ``sys.executable -m`` rather than the installed console script so
 # the test works regardless of whether the venv's bin dir is on $PATH when
@@ -133,6 +137,80 @@ def test_analyze_file_before_initialized_returns_error() -> None:
         assert response["error"]["code"] == -32002
 
         # Tear down.
+        proc.stdin.close()
+        proc.wait(timeout=5)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+def test_analyze_file_returns_extracted_entities(tmp_path: Path) -> None:
+    """After initialize, analyze_file on a real .py file yields function entities."""
+    demo = tmp_path / "demo.py"
+    demo.write_text(
+        textwrap.dedent("""
+        def hello():
+            pass
+
+        class Foo:
+            def bar(self):
+                pass
+    """).lstrip()
+    )
+
+    proc = subprocess.Popen(  # noqa: S603
+        _SERVER_CMD,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+
+        # Handshake with project_root = tmp_path so the plugin relativises paths.
+        proc.stdin.write(
+            _encode_frame(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocol_version": "1.0",
+                        "project_root": str(tmp_path),
+                    },
+                },
+            ),
+        )
+        proc.stdin.flush()
+        _read_frame(proc.stdout)  # initialize response
+        proc.stdin.write(
+            _encode_frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+        )
+        proc.stdin.flush()
+
+        # Analyze the file.
+        proc.stdin.write(
+            _encode_frame(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "analyze_file",
+                    "params": {"file_path": str(demo)},
+                },
+            ),
+        )
+        proc.stdin.flush()
+        response = _read_frame(proc.stdout)
+        assert response["id"] == 2
+        entities = response["result"]["entities"]
+        ids = {e["id"] for e in entities}
+        assert ids == {
+            "python:function:demo.hello",
+            "python:function:demo.Foo.bar",
+        }
+
         proc.stdin.close()
         proc.wait(timeout=5)
     finally:

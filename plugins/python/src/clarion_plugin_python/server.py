@@ -21,11 +21,14 @@ Task 7 replaces ``handle_analyze_file`` with the extractor.
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import IO, Any
 
 from clarion_plugin_python import __version__
+from clarion_plugin_python.extractor import extract
 from clarion_plugin_python.stdout_guard import install_stdio
 from clarion_plugin_python.wardline_probe import probe as wardline_probe
 
@@ -56,10 +59,11 @@ class ProtocolError(RuntimeError):
 
 @dataclass
 class ServerState:
-    """Handshake + shutdown phase flags tracked across the dispatch loop."""
+    """Handshake + shutdown + project-root state across the dispatch loop."""
 
     initialized: bool = False
     shutdown_requested: bool = False
+    project_root: Path | None = field(default=None)
 
 
 def read_frame(stream: IO[bytes]) -> dict[str, Any] | None:
@@ -132,8 +136,11 @@ def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
     }
 
 
-def handle_initialize(_params: dict[str, Any]) -> dict[str, Any]:
-    """Return the plugin's identity and capabilities (InitializeResult shape)."""
+def handle_initialize(params: dict[str, Any], state: ServerState) -> dict[str, Any]:
+    """Return the plugin's identity + capabilities; capture ``project_root``."""
+    root_raw = params.get("project_root")
+    if isinstance(root_raw, str) and root_raw:
+        state.project_root = Path(root_raw).resolve()
     return {
         "name": "clarion-plugin-python",
         "version": __version__,
@@ -144,12 +151,43 @@ def handle_initialize(_params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def handle_analyze_file(_params: dict[str, Any]) -> dict[str, Any]:
-    """Return an empty entity list; Task 7 replaces this with extractor output."""
-    return {"entities": []}
+def _resolve_module_path(file_path_raw: str, state: ServerState) -> str:
+    """Compute the entity ``module_path`` relative to ``project_root``.
+
+    The host sends absolute paths (see ``crates/clarion-cli/src/analyze.rs``
+    — ``project_root`` is canonicalised and file entries are built by
+    ``entry.path()`` joins). To produce the expected L7 qualified names
+    (``pkg.module.func`` rather than ``tmp.xyz.demo.func``), the plugin
+    relativises each incoming path against the ``project_root`` captured
+    at ``initialize``.
+    """
+    path = Path(file_path_raw)
+    if state.project_root is not None and path.is_absolute():
+        try:
+            return str(path.resolve().relative_to(state.project_root))
+        except ValueError:
+            # Outside project_root — host's jail should have caught this.
+            # Fall back to the raw path so the host's logs show the drift.
+            return file_path_raw
+    return file_path_raw
 
 
-Handler = Callable[[dict[str, Any]], dict[str, Any]]
+def handle_analyze_file(params: dict[str, Any], state: ServerState) -> dict[str, Any]:
+    """Read the requested file, extract entities, return AnalyzeFileResult shape."""
+    file_path_raw = params.get("file_path")
+    if not isinstance(file_path_raw, str):
+        return {"entities": []}
+    path = Path(file_path_raw)
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        sys.stderr.write(f"clarion-plugin-python: cannot read {file_path_raw}: {exc}\n")
+        return {"entities": []}
+    module_path = _resolve_module_path(file_path_raw, state)
+    return {"entities": extract(source, module_path)}
+
+
+Handler = Callable[[dict[str, Any], ServerState], dict[str, Any]]
 
 _HANDLERS: dict[str, Handler] = {
     "initialize": handle_initialize,
@@ -180,7 +218,7 @@ def dispatch(frame: dict[str, Any], state: ServerState) -> dict[str, Any] | None
     if handler is None:
         return _error(request_id, _ERR_METHOD_NOT_FOUND, f"method not found: {method}")
     try:
-        result = handler(params)
+        result = handler(params, state)
     except Exception as exc:  # noqa: BLE001 - dispatch boundary: any handler bug becomes a response
         return _error(request_id, _ERR_INTERNAL, f"handler failed: {exc}")
     return _success(request_id, result)

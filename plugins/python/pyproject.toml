@@ -34,6 +34,13 @@ clarion-plugin-python = "clarion_plugin_python.__main__:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/clarion_plugin_python"]
 
+[tool.hatch.build.targets.wheel.shared-data]
+# Route plugin.toml into <install-prefix>/share/clarion/plugins/... so WP2's
+# L9 discovery fallback (next-to-binary first, install-prefix/share/ second)
+# finds it without ceremony. pip install -e exposes the same layout via the
+# wheel's data directory.
+"plugin.toml" = "share/clarion/plugins/clarion-plugin-python/plugin.toml"
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
