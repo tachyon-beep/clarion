@@ -27,7 +27,10 @@ fn main() {
     let mut writer = stdout.lock();
 
     loop {
-        let Ok(frame) = read_frame(&mut reader, ContentLengthCeiling::unbounded()) else {
+        // Use the ADR-021 default (8 MiB) so this fixture has the same
+        // ceiling a real plugin sees. `unbounded()` is now `#[cfg(test)]`
+        // only — production code must name an explicit byte limit.
+        let Ok(frame) = read_frame(&mut reader, ContentLengthCeiling::DEFAULT) else {
             std::process::exit(1)
         };
 

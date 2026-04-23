@@ -82,6 +82,12 @@ impl ContentLengthCeiling {
     /// A sentinel ceiling that never fires — equivalent to `usize::MAX`.
     ///
     /// Use in tests that do not care about the frame-size limit.
+    ///
+    /// Gated behind `#[cfg(test)]` (production code would use this to
+    /// `vec![0u8; isize::MAX]` on a malicious Content-Length and OOM-kill
+    /// the host). Production callers must pass an explicit ceiling; the
+    /// ADR-021 default is [`Self::DEFAULT`] at 8 MiB.
+    #[cfg(test)]
     pub const fn unbounded() -> Self {
         Self(usize::MAX)
     }
