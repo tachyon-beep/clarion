@@ -44,6 +44,8 @@ ignore = [
     "COM812", # conflicts with ruff format
     "ISC001", # conflicts with ruff format
     "CPY",    # copyright headers are not our convention
+    "ANN401", # Any is legitimate for JSON-RPC payload fields (shape is open)
+    "TRY003", # short composed exception messages are fine
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -52,7 +54,17 @@ ignore = [
     "PLR2004", # magic numbers are fine in test expectations
     "ANN",     # type annotations optional in tests
     "INP001",  # tests/ is a namespace package
+    "S108",    # hard-coded /tmp paths are test fixtures, not real I/O
+    "E501",    # long assert messages in test failures are fine
 ]
+
+[tool.ruff.lint.mccabe]
+# Dispatch loops naturally exceed the default 10; 15 matches our Rust clippy.toml.
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+max-returns = 10
+max-branches = 15
 
 [tool.ruff.format]
 # defaults: double quotes, space indent, trailing commas where appropriate
