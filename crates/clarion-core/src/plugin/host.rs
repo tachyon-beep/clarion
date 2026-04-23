@@ -96,6 +96,18 @@ pub const FINDING_ENTITY_FIELD_OVERSIZE: &str = "CLA-INFRA-PLUGIN-ENTITY-FIELD-O
 /// without false-positing on pathological-but-legitimate inputs.
 pub const MAX_ENTITY_FIELD_BYTES: usize = 4 * 1024;
 
+/// Per-entity cap on the total serialised size of the untyped passthrough
+/// maps [`RawEntity::extra`] and [`RawSource::extra`].
+///
+/// These flow into `properties_json` downstream (via
+/// `clarion-cli::analyze::map_entity_to_record`) as `serde_json::to_string`
+/// output. Without a cap, a plugin could return 8 MiB frames consisting of
+/// one tiny `qualified_name` plus a multi-MiB `extra` map that lives in the
+/// database row and in every host-side clone until the run ends. 64 KiB is
+/// well above any legitimate plugin-declared properties bag (WP3's wardline
+/// payload is <2 KiB) while rejecting payload floods.
+pub const MAX_ENTITY_EXTRA_BYTES: usize = 64 * 1024;
+
 // ── Wire entity types (Option A) ──────────────────────────────────────────────
 
 /// Raw entity as received from the plugin wire.
@@ -128,11 +140,14 @@ pub struct RawSource {
 }
 
 /// Return `Some((field_name, actual_len))` for the first field of `raw` that
-/// exceeds [`MAX_ENTITY_FIELD_BYTES`]; `None` if every field is in-bounds.
+/// exceeds its bound, or `None` if every field is in-bounds.
 ///
 /// Fields are checked in a stable order so the finding reports the first
 /// offender deterministically for the same input. Order mirrors the wire
-/// layout: `id` → `kind` → `qualified_name` → `source.file_path`.
+/// layout: `id` → `kind` → `qualified_name` → `source.file_path` →
+/// `extra` (serialised) → `source.extra` (serialised). The four scalar
+/// string fields are bounded by [`MAX_ENTITY_FIELD_BYTES`]; the two
+/// untyped passthrough maps are bounded by [`MAX_ENTITY_EXTRA_BYTES`].
 fn oversize_field(raw: &RawEntity) -> Option<(&'static str, usize)> {
     for (name, len) in [
         ("id", raw.id.len()),
@@ -144,6 +159,23 @@ fn oversize_field(raw: &RawEntity) -> Option<(&'static str, usize)> {
             return Some((name, len));
         }
     }
+
+    // `extra` and `source.extra` flow to `properties_json` downstream. The
+    // check is by serialised byte length rather than entry count — a single
+    // entry with a multi-MiB Value is as toxic as many entries each small.
+    // Serialisation is the next-downstream step anyway (via
+    // clarion-cli::analyze::map_entity_to_record), so the to_vec here is not
+    // an additional allocation beyond what we were already going to pay.
+    for (name, map) in [("extra", &raw.extra), ("source.extra", &raw.source.extra)] {
+        if map.is_empty() {
+            continue;
+        }
+        let len = serde_json::to_vec(map).map_or(0, |b| b.len());
+        if len > MAX_ENTITY_EXTRA_BYTES {
+            return Some((name, len));
+        }
+    }
+
     None
 }
 
@@ -602,11 +634,12 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
 
             // 0. Field-size check. Runs before the identity-check `format!()`
             //    that would otherwise duplicate an unbounded qualified_name.
-            //    Scope is the four fields the host subsequently reads: `id`,
-            //    `kind`, `qualified_name`, `source.file_path`. Oversize in any
-            //    of the four drops the entity without killing the plugin.
-            //    `raw.extra` / `raw.source.extra` are also unbounded but flow
-            //    only into `properties_json` downstream (WP2 review-2 P2).
+            //    Scope covers all six plugin-controlled fields the host
+            //    retains: the four scalar strings (`id`, `kind`,
+            //    `qualified_name`, `source.file_path`) plus the two untyped
+            //    passthrough maps (`extra`, `source.extra`), which flow into
+            //    `properties_json` downstream. Oversize in any field drops
+            //    the entity without killing the plugin.
             if let Some((field, len)) = oversize_field(&raw) {
                 self.findings
                     .push(HostFinding::entity_field_oversize(field, len));
@@ -1572,6 +1605,63 @@ ontology_version = "0.1.0"
             offense.metadata.get("field").map(String::as_str),
             Some("kind"),
             "field metadata must pinpoint kind; got: {:?}",
+            offense.metadata
+        );
+    }
+
+    /// T8e — oversize `extra` passthrough map is caught by serialised-size
+    /// cap. Complements T8/T8b/T8c/T8d, which cover the four scalar string
+    /// fields. A plugin that returns a small `qualified_name` plus a multi-MiB
+    /// `extra` Map would otherwise persist the whole map in `properties_json`.
+    #[test]
+    fn t8e_oversize_extra_map_is_dropped_with_finding() {
+        let manifest = compliant_manifest();
+        let mut mock = MockPlugin::new_compliant();
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        let sample = project_dir.path().join("sample.mock");
+        std::fs::write(&sample, b"").unwrap();
+
+        // Build an `extra` map whose serialisation exceeds MAX_ENTITY_EXTRA_BYTES.
+        // One string entry well over the cap is the simplest pathological case.
+        let huge_value = "x".repeat(MAX_ENTITY_EXTRA_BYTES + 1024);
+        let response_id = host.next_request_id_test();
+        let response_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": response_id,
+            "result": {
+                "entities": [{
+                    "id": "mock:function:stub",
+                    "kind": "function",
+                    "qualified_name": "stub",
+                    "source": { "file_path": sample.to_string_lossy().into_owned() },
+                    "bloat": huge_value,
+                }]
+            }
+        });
+        let body = serde_json::to_vec(&response_json).unwrap();
+        {
+            let reader = host.reader_mut_test();
+            let pos_before = reader.position();
+            let old_end = reader.get_ref().len() as u64;
+            let mut framed: Vec<u8> = Vec::new();
+            write_frame(&mut framed, &Frame { body }).unwrap();
+            reader.get_mut().extend_from_slice(&framed);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
+        }
+
+        host.analyze_file(&sample).expect("must not error");
+        let findings = host.take_findings();
+        let offense = findings
+            .iter()
+            .find(|f| f.subcode == FINDING_ENTITY_FIELD_OVERSIZE)
+            .unwrap_or_else(|| panic!("expected oversize finding; got {findings:?}"));
+        assert_eq!(
+            offense.metadata.get("field").map(String::as_str),
+            Some("extra"),
+            "field metadata must pinpoint extra; got: {:?}",
             offense.metadata
         );
     }
