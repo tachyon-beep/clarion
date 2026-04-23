@@ -47,9 +47,9 @@ use crate::plugin::{Manifest, ManifestError, parse_manifest};
 pub struct DiscoveredPlugin {
     /// Path to the plugin executable **as found on `$PATH`**.
     ///
-    /// Intentionally NOT canonicalised. The neighbour-manifest lookup at
-    /// [`find_manifest`] joins `plugin.toml` with this path's parent
-    /// directory; canonicalising here would follow symlinks (e.g.
+    /// Intentionally NOT canonicalised. The neighbour-manifest lookup
+    /// joins `plugin.toml` with this path's parent directory;
+    /// canonicalising here would follow symlinks (e.g.
     /// `~/bin/clarion-plugin-python` → `~/.local/pipx/venvs/*/bin/...`)
     /// and the manifest lookup would then miss the neighbour that lives
     /// next to the symlink.

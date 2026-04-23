@@ -221,6 +221,7 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
         let manifest = plugin.manifest.clone();
         let project_root_clone = project_root.clone();
         let pid_clone = plugin_id.clone();
+        let exec_clone = plugin.executable.clone();
         let files_clone = plugin_files.clone();
 
         // A JoinError here means the blocking task panicked (OOM, stack
@@ -233,7 +234,13 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
         // and resolves the run via SoftFailed → CommitRun(Failed) with exit 1.
         let spawn_result: Result<BatchResult, String> = handle_plugin_task_join_result(
             tokio::task::spawn_blocking(move || {
-                run_plugin_blocking(manifest, &project_root_clone, &pid_clone, &files_clone)
+                run_plugin_blocking(
+                    manifest,
+                    &project_root_clone,
+                    &pid_clone,
+                    &exec_clone,
+                    &files_clone,
+                )
             })
             .await,
             &plugin_id,
@@ -488,17 +495,19 @@ fn run_plugin_blocking(
     manifest: clarion_core::Manifest,
     project_root: &Path,
     plugin_id: &str,
+    executable: &Path,
     files: &[PathBuf],
 ) -> Result<BatchResult, String> {
     use clarion_core::PluginHost;
 
-    let (mut host, mut child) = PluginHost::spawn(manifest, project_root).map_err(|e| match e {
-        HostError::Spawn(msg) => format!("failed to spawn plugin {plugin_id}: {msg}"),
-        HostError::Handshake(ref me) => {
-            format!("plugin {plugin_id} refused handshake: {me}")
-        }
-        other => format!("plugin {plugin_id} spawn/handshake error: {other}"),
-    })?;
+    let (mut host, mut child) =
+        PluginHost::spawn(manifest, project_root, executable).map_err(|e| match e {
+            HostError::Spawn(msg) => format!("failed to spawn plugin {plugin_id}: {msg}"),
+            HostError::Handshake(ref me) => {
+                format!("plugin {plugin_id} refused handshake: {me}")
+            }
+            other => format!("plugin {plugin_id} spawn/handshake error: {other}"),
+        })?;
 
     let work_result: Result<Vec<(String, EntityRecord)>, String> = (|| {
         let mut collected: Vec<(String, EntityRecord)> = Vec::new();

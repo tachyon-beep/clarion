@@ -437,20 +437,64 @@ impl
     /// Spawn the plugin as a subprocess, apply `RLIMIT_AS` on Linux, perform
     /// the handshake, and return the live host alongside the child handle.
     ///
+    /// `executable` is the path discovered on `$PATH` (from
+    /// [`crate::plugin::DiscoveredPlugin::executable`]). The manifest's
+    /// `plugin.executable` field is validated to be a bare basename that
+    /// matches the discovered filename — a compromised `plugin.toml`
+    /// cannot redirect execution to `/bin/sh`, `python3`, or a relative
+    /// `../../.local/bin/evil` by naming it there.
+    ///
     /// # Errors
     ///
-    /// Returns [`HostError::Spawn`] if the executable cannot be started, or a
-    /// handshake error if the plugin fails `initialize` or the manifest fails
-    /// `validate_for_v0_1`.
+    /// Returns [`HostError::Spawn`] if:
+    /// - the executable cannot be started;
+    /// - the manifest's declared `plugin.executable` contains a path
+    ///   separator, or does not match the discovered binary's basename.
+    ///
+    /// Returns a handshake error if the plugin fails `initialize` or the
+    /// manifest fails `validate_for_v0_1`.
     pub fn spawn(
         manifest: Manifest,
         project_root: &Path,
+        executable: &Path,
     ) -> Result<(Self, std::process::Child), HostError> {
         let canonical_root = project_root
             .canonicalize()
             .map_err(|e| HostError::Spawn(format!("canonicalise project root: {e}")))?;
 
-        let mut command = std::process::Command::new(&manifest.plugin.executable);
+        // Manifest-declared executable must be a bare basename matching
+        // the discovered binary. Two threats this rules out:
+        // 1. Absolute / relative paths in the manifest (`executable = "/bin/sh"`,
+        //    `executable = "../../evil"`) that would run a binary the
+        //    operator did not install.
+        // 2. Mismatch between discovered name (`clarion-plugin-python`) and
+        //    declared name — which would silently run the wrong binary if
+        //    a plugin directory contained multiple.
+        let declared = &manifest.plugin.executable;
+        if declared.contains('/') || declared.contains('\\') {
+            return Err(HostError::Spawn(format!(
+                "manifest plugin.executable {declared:?} contains a path separator; \
+                 must be a bare basename matching the discovered binary"
+            )));
+        }
+        let discovered_basename =
+            executable
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| {
+                    HostError::Spawn(format!(
+                        "discovered executable {} has no UTF-8 basename",
+                        executable.display()
+                    ))
+                })?;
+        if declared != discovered_basename {
+            return Err(HostError::Spawn(format!(
+                "manifest plugin.executable {declared:?} does not match discovered \
+                 binary basename {discovered_basename:?}"
+            )));
+        }
+
+        let mut command = std::process::Command::new(executable);
         command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -476,7 +520,7 @@ impl
 
         let mut child = command
             .spawn()
-            .map_err(|e| HostError::Spawn(format!("spawn {}: {e}", manifest.plugin.executable)))?;
+            .map_err(|e| HostError::Spawn(format!("spawn {}: {e}", executable.display())))?;
 
         let stdin = child
             .stdin

@@ -78,24 +78,21 @@ fn fixture_manifest_parses_correctly() {
 /// receives one entity, shuts down, and asserts exit code 0.
 #[test]
 fn t1_subprocess_happy_path() {
-    // 1. Parse the fixture manifest.
-    let mut manifest =
+    // 1. Parse the fixture manifest. Leave `plugin.executable` as declared
+    //    in the TOML (a bare basename); spawn validates it matches the
+    //    discovered binary's basename.
+    let manifest =
         parse_manifest(FIXTURE_MANIFEST_BYTES).expect("fixture plugin.toml must be valid");
 
-    // 2. Override the executable path to the compiled fixture binary.
-    manifest.plugin.executable = fixture_binary_path()
-        .to_str()
-        .expect("fixture binary path must be valid UTF-8")
-        .to_owned();
-
-    // 3. Build a real project root containing the fixture sample file.
+    // 2. Build a real project root containing the fixture sample file.
     let project_dir = tempfile::TempDir::new().expect("create tempdir");
     let sample_path = project_dir.path().join("sample.mt");
     std::fs::write(&sample_path, b"widget demo.sample {}\n").expect("write sample.mt");
 
-    // 4. Spawn the plugin and complete the handshake.
+    // 3. Spawn the plugin with the discovered binary path.
+    let exec = fixture_binary_path();
     let (mut host, mut child) =
-        PluginHost::spawn(manifest, project_dir.path()).expect("spawn must succeed");
+        PluginHost::spawn(manifest, project_dir.path(), &exec).expect("spawn must succeed");
 
     // 5. Analyze the fixture file.
     let entities = host
@@ -160,14 +157,22 @@ fn t1_subprocess_happy_path() {
 #[test]
 #[cfg(unix)]
 fn t9_handshake_failure_on_immediate_exit_returns_err_promptly() {
-    let mut manifest = parse_manifest(FIXTURE_MANIFEST_BYTES).expect("fixture manifest must parse");
-    // `/bin/true` exists on all Unix systems, exits 0 without reading stdin.
-    manifest.plugin.executable = "/bin/true".to_owned();
+    let manifest = parse_manifest(FIXTURE_MANIFEST_BYTES).expect("fixture manifest must parse");
 
     let project_dir = tempfile::TempDir::new().expect("tmpdir");
 
+    // Construct a symlink whose basename matches the manifest-declared
+    // `plugin.executable` (`clarion-plugin-fixture`) but whose target is
+    // `/bin/true`. This exits immediately without reading stdin, which is
+    // the handshake-failure mode we want to test. Pointing `spawn` at
+    // `/bin/true` directly would fail the basename-match check before
+    // forking, which tests a different property.
+    let stub_dir = tempfile::TempDir::new().expect("stub dir");
+    let stub_exec = stub_dir.path().join("clarion-plugin-fixture");
+    std::os::unix::fs::symlink("/bin/true", &stub_exec).expect("symlink /bin/true");
+
     let start = std::time::Instant::now();
-    let result = PluginHost::spawn(manifest, project_dir.path());
+    let result = PluginHost::spawn(manifest, project_dir.path(), &stub_exec);
     let elapsed = start.elapsed();
 
     assert!(
@@ -181,4 +186,65 @@ fn t9_handshake_failure_on_immediate_exit_returns_err_promptly() {
         elapsed < std::time::Duration::from_secs(5),
         "handshake failure must return promptly; took {elapsed:?}"
     );
+}
+
+/// T10: `PluginHost::spawn` refuses a manifest whose `plugin.executable`
+/// contains a path separator. A compromised `plugin.toml` must not be
+/// able to redirect execution to `/bin/sh`, `python3`, or a relative
+/// traversal; the manifest field is required to be a bare basename
+/// matching the PATH-discovered binary.
+#[test]
+#[cfg(unix)]
+fn t10_manifest_executable_with_path_separator_is_refused() {
+    use clarion_core::HostError;
+
+    let mut manifest = parse_manifest(FIXTURE_MANIFEST_BYTES).expect("fixture manifest must parse");
+    manifest.plugin.executable = "/bin/sh".to_owned();
+
+    let project_dir = tempfile::TempDir::new().expect("tmpdir");
+    let exec = fixture_binary_path();
+
+    let Err(err) = PluginHost::spawn(manifest, project_dir.path(), &exec) else {
+        panic!("spawn must refuse absolute-path manifest executable");
+    };
+    match err {
+        HostError::Spawn(msg) => {
+            assert!(
+                msg.contains("path separator"),
+                "spawn error must name the path-separator violation; got: {msg}"
+            );
+        }
+        other => panic!("expected HostError::Spawn; got {other:?}"),
+    }
+}
+
+/// T11: `PluginHost::spawn` refuses a manifest whose `plugin.executable`
+/// basename does not match the PATH-discovered binary. Prevents a plugin
+/// directory hosting two binaries from accidentally cross-wiring: the
+/// host never runs a binary with a different name than the manifest
+/// declares.
+#[test]
+#[cfg(unix)]
+fn t11_manifest_executable_basename_mismatch_is_refused() {
+    use clarion_core::HostError;
+
+    let mut manifest = parse_manifest(FIXTURE_MANIFEST_BYTES).expect("fixture manifest must parse");
+    // Declare a basename that will not match the discovered binary.
+    manifest.plugin.executable = "clarion-plugin-other".to_owned();
+
+    let project_dir = tempfile::TempDir::new().expect("tmpdir");
+    let exec = fixture_binary_path();
+
+    let Err(err) = PluginHost::spawn(manifest, project_dir.path(), &exec) else {
+        panic!("spawn must refuse basename mismatch");
+    };
+    match err {
+        HostError::Spawn(msg) => {
+            assert!(
+                msg.contains("does not match") && msg.contains("basename"),
+                "spawn error must name the basename mismatch; got: {msg}"
+            );
+        }
+        other => panic!("expected HostError::Spawn; got {other:?}"),
+    }
 }
