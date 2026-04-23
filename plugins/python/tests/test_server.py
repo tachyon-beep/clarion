@@ -72,7 +72,16 @@ def test_initialize_roundtrip() -> None:
         assert result["name"] == "clarion-plugin-python"
         assert result["version"] == "0.1.0"
         assert result["ontology_version"] == "0.1.0"
-        assert result["capabilities"] == {}
+        # Capabilities carry the L8 Wardline probe result. We don't pin a
+        # specific status here because the probe's output depends on whether
+        # wardline is installed in the test environment — all three legal
+        # states (`absent`, `enabled`, `version_out_of_range`) pass.
+        assert "wardline" in result["capabilities"]
+        assert result["capabilities"]["wardline"]["status"] in {
+            "absent",
+            "enabled",
+            "version_out_of_range",
+        }
 
         # Graceful shutdown: shutdown → ack `{}`, then exit notification.
         proc.stdin.write(
