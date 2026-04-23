@@ -7,6 +7,9 @@ also consume — for the byte-for-byte L2 parity proof.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from clarion_plugin_python.entity_id import (
@@ -15,6 +18,11 @@ from clarion_plugin_python.entity_id import (
     SegmentContainsColonError,
     entity_id,
 )
+
+# Repo root is four parents up from this test file:
+# plugins/python/tests/test_entity_id.py → ... → /repo
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_FIXTURE_PATH = _REPO_ROOT / "fixtures" / "entity_id.json"
 
 
 def test_module_level_function_id() -> None:
@@ -87,3 +95,24 @@ def test_rejects_colon_in_plugin_id() -> None:
     with pytest.raises(SegmentContainsColonError) as exc_info:
         entity_id("py:thon", "function", "demo.hello")
     assert exc_info.value.field == "plugin_id"
+
+
+def test_matches_shared_fixture() -> None:
+    """UQ-WP3-08: byte-for-byte L2 parity with the Rust assembler.
+
+    The same ``fixtures/entity_id.json`` is consumed by
+    ``crates/clarion-core/src/entity_id.rs::tests::shared_fixture_byte_for_byte_parity``.
+    If this test or the Rust test disagrees on any row, the ID scheme has
+    drifted between languages — the cross-product identity join (ADR-018)
+    would break silently. CI fails both sides in lockstep.
+    """
+    with _FIXTURE_PATH.open() as fh:
+        rows = json.load(fh)
+    assert len(rows) >= 20, f"fixture must have >=20 rows, got {len(rows)}"
+    for row in rows:
+        actual = entity_id(
+            row["plugin_id"],
+            row["kind"],
+            row["canonical_qualified_name"],
+        )
+        assert actual == row["expected_entity_id"], f"mismatch for row {row!r}"

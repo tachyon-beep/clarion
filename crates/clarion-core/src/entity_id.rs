@@ -165,6 +165,14 @@ fn validate_no_colon(field: &'static str, value: &str) -> Result<(), EntityIdErr
 mod tests {
     use super::*;
 
+    #[derive(Debug, serde::Deserialize)]
+    struct FixtureRow {
+        plugin_id: String,
+        kind: String,
+        canonical_qualified_name: String,
+        expected_entity_id: String,
+    }
+
     #[test]
     fn module_level_function() {
         let id = entity_id("python", "function", "demo.hello").unwrap();
@@ -325,5 +333,35 @@ mod tests {
             result.is_err(),
             "expected custom deserialiser to reject non-3-segment input"
         );
+    }
+
+    #[test]
+    fn shared_fixture_byte_for_byte_parity() {
+        // L2 byte-for-byte parity proof (WP3 Task 5 / UQ-WP3-08): this
+        // test and `plugins/python/tests/test_entity_id.py::test_matches_shared_fixture`
+        // consume the same `fixtures/entity_id.json` at the workspace root.
+        // Divergence on either side fails CI. Retroactively earns the
+        // signoff A.1.4 proof (WP1 ticked it against the fixture before
+        // the file existed — WP3 Task 5 is where it lands).
+        let fixture_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/entity_id.json");
+        let contents = std::fs::read_to_string(&fixture_path)
+            .unwrap_or_else(|err| panic!("read fixture {}: {err}", fixture_path.display()));
+        let rows: Vec<FixtureRow> =
+            serde_json::from_str(&contents).expect("fixture parses as Vec<FixtureRow>");
+        assert!(
+            rows.len() >= 20,
+            "fixture must have at least 20 rows; got {}",
+            rows.len()
+        );
+        for row in &rows {
+            let actual = entity_id(&row.plugin_id, &row.kind, &row.canonical_qualified_name)
+                .unwrap_or_else(|err| panic!("row {row:?} failed to assemble: {err}"));
+            assert_eq!(
+                actual.as_str(),
+                row.expected_entity_id,
+                "mismatch on row {row:?}"
+            );
+        }
     }
 }

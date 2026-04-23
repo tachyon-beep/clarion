@@ -12,6 +12,10 @@ repos:
     hooks:
       - id: mypy
         files: ^plugins/python/(src|tests)/.*\.py$
-        args: [--strict, --config-file=plugins/python/pyproject.toml]
+        # Run mypy against the whole plugin tree (not just staged files in
+        # isolation) so intra-package imports resolve. The files: pattern
+        # above triggers the hook; args: names the actual target.
+        pass_filenames: false
+        args: [--strict, --config-file=plugins/python/pyproject.toml, plugins/python]
         additional_dependencies:
           - pytest>=8.0
