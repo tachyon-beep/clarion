@@ -222,15 +222,21 @@ Minimal. `pyproject.toml` declares:
 
 ## 5. Unresolved questions
 
-- **UQ-WP3-01** — **Qualname for nested class methods**: `class A: class B: def c():`.
-  Python's `__qualname__` gives `A.B.c`. Confirm the L7 rule matches this without
-  edge cases. **Proposal**: yes, follow `__qualname__` exactly; add the case as a
-  test fixture. **Resolution by**: Task 3.
-- **UQ-WP3-02** — **How does the plugin handle syntax errors in the source file?**
-  `ast.parse()` raises `SyntaxError`. Options: (a) skip the file + log + emit zero
-  entities for that file; (b) fail the run. **Proposal**: (a) — skip + log. Unusable
-  files should not abort analysis; WP4 may later attach a finding. **Resolution
-  by**: Task 4.
+- **UQ-WP3-01** — **Qualname for nested class methods**: ~~open~~ —
+  **resolved as "follow ``__qualname__`` exactly"**. `class A: class B: def c():`
+  produces `A.B.c` (class parents chain with `.`, no `<locals>` marker).
+  `qualname.reconstruct_qualname` tests cover this directly
+  (`test_nested_class_method_chains_class_names`) plus the harder
+  class-in-function-in-class case (`Foo.bar.<locals>.Local.meth`) where
+  `<locals>` appears once, only at the function-parent boundary.
+  **Resolved**: Task 3 / `plugin.qualname`.
+- **UQ-WP3-02** — **Syntax-error handling**: ~~open~~ — **resolved as
+  "skip + stderr log"** per the original proposal. `extract()` catches
+  `SyntaxError` from `ast.parse`, writes one line to `sys.stderr`
+  (`clarion-plugin-python: skipping <path>: syntax error at line N: <msg>`),
+  and returns `[]`. The run continues; WP4 may later attach a finding.
+  `test_syntax_error_yields_empty_list_and_logs_to_stderr` is the
+  discriminating test. **Resolved**: Task 4 / `plugin.extractor`.
 - **UQ-WP3-03** — **Fully wire Wardline import in Sprint 1 or stub?** ~~open~~
   — **resolved as "fully wire"**. Pre-sprint symbol check (see L8) confirmed
   `wardline.core.registry.REGISTRY` and `wardline.__version__` exist in the
@@ -242,36 +248,50 @@ Minimal. `pyproject.toml` declares:
   for `ast.unparse` availability and better error messages; 3.12 raises the
   install barrier without a Sprint 1 payoff. Clarion users are developers
   with reasonable Python versions available. **Resolved**: Task 1.
-- **UQ-WP3-05** — **Module-path normalisation**: the `module_path` entity
-  property and the derivation of the dotted-module prefix for L7's
-  `canonical_qualified_name` are both rooted at the analysis root (the arg
-  passed to `clarion analyze`). Does WP3 receive the root explicitly in
-  `analyze_file` params, or is each path already root-relative from the
-  host? **Proposal**: the host passes root-relative paths after jail
-  normalisation (WP2 L6); WP3 does not re-canonicalise. Cross-check with WP2
-  Task 6 implementation. **Resolution by**: Task 4.
-- **UQ-WP3-06** — **Handling of `__init__.py` module-path**: should the module-path
-  for entities in `pkg/__init__.py` be `pkg/__init__.py` or `pkg`? Proposal:
-  `pkg/__init__.py` (the literal file path); `pkg` is semantic module naming that
-  WP4 can synthesise if needed. Simplicity wins: file path is unambiguous.
-  **Resolution by**: Task 4.
-- **UQ-WP3-07** — **Type-annotation functions (`typing.overload`, protocol methods)**:
-  do they get emitted like regular functions? **Proposal**: yes — they're still
-  `def`-bound names; WP4 can later add a `CLA-PY-OVERLOAD` rule if useful.
-  **Resolution by**: Task 3.
-- **UQ-WP3-08** — **Byte-for-byte `EntityId` parity strategy**: how do we
-  maintain parity with WP1's Rust implementation? Option (a): both
-  implementations read the same spec (ADR-003) and rely on tests. Option (b):
-  ship a shared test fixture file (JSON) with input triples + expected
-  outputs; both implementations' test suites consume it. **Proposal**: (b) —
-  a shared `fixtures/entity_id.json` file at the repo root. Each row contains
-  `{plugin_id, kind, canonical_qualified_name, expected_entity_id}`. Exact
-  same inputs, exact same expected outputs; divergence fails CI on both
-  sides. **Resolution by**: Task 5.
-- **UQ-WP3-09** — **Plugin logging destination**: stderr for free-form (per WP2
-  UQ-WP2-07 resolution) or a file under `.clarion/logs/`? **Proposal**: stderr;
-  core forwards to tracing; `.clarion/logs/` is a Sprint 2+ decision. **Resolution
-  by**: Task 2.
+- **UQ-WP3-05** — **Module-path normalisation**: ~~open~~ — **resolved
+  as plugin-side relativisation** (diverges from original proposal). The
+  host sends absolute paths (WP2's CLI canonicalises `project_root`
+  and walks via `entry.path()` — see
+  `crates/clarion-cli/src/analyze.rs`), so the plugin captures
+  `project_root` from the `initialize` handshake and relativises
+  incoming `file_path` values against it when deriving the dotted-module
+  prefix for `qualified_name`. `source.file_path` emitted on the wire
+  stays absolute so the host's path jail canonicalise-and-compare works.
+  `extract(source, file_path, *, module_prefix_path=...)` decouples the
+  two paths. **Resolved**: Task 7 / `plugin.server._resolve_module_path`.
+- **UQ-WP3-06** — **`__init__.py` handling**: ~~open~~ — **resolved as
+  "collapse to package name for dotted prefix; keep literal file_path"**.
+  `pkg/__init__.py` produces `module_dotted_name == "pkg"` (not
+  `pkg.__init__`), so entities emit `qualified_name = "pkg.package_helper"`.
+  `source.file_path` stays as the literal `pkg/__init__.py` — the file
+  is unambiguous even when the module name collapses. `test_init_py_
+  collapsed_to_package_name` is the discriminating test. **Resolved**:
+  Task 4 / `plugin.extractor.module_dotted_name`.
+- **UQ-WP3-07** — **`typing.overload` / protocol methods**: ~~open~~ —
+  **resolved as "regular function entities"**. Overloaded methods are
+  `FunctionDef`s with a decorator list — the extractor emits each one
+  as a separate entity with the same `qualified_name`, matching Python's
+  own `__qualname__` behaviour. A future `CLA-PY-OVERLOAD` rule can add
+  semantic annotation in a later sprint. `test_overloaded_method_gets_
+  regular_qualname` covers three overloads + the implementation.
+  **Resolved**: Task 3 / `plugin.qualname`.
+- **UQ-WP3-08** — **Byte-for-byte `EntityId` parity strategy**: ~~open~~ —
+  **resolved as "shared JSON fixture file"**. `fixtures/entity_id.json`
+  at the repo root has 20 rows covering module-level functions, class
+  methods, `<locals>`-marked nested functions, core file/subsystem
+  entities, and hypothetical go/rust plugin IDs. Both
+  `crates/clarion-core/src/entity_id.rs::tests::shared_fixture_byte_for_byte_parity`
+  and `plugins/python/tests/test_entity_id.py::test_matches_shared_fixture`
+  consume the same file and assert byte-equal output; divergence fails
+  CI on both sides in lockstep. **Resolved**: Task 5 / `fixtures/entity_id.json`.
+- **UQ-WP3-09** — **Plugin logging destination**: ~~open~~ — **resolved
+  as "stderr for diagnostics"**. `extractor` writes syntax-error and
+  read-error messages to `sys.stderr` via `sys.stderr.write`. The host
+  captures stderr into a bounded 64 KiB ring buffer (WP2 scrub commit
+  `b3c91a7`, resolving UQ-WP2-07); diagnostics are surfaced via
+  `host.stderr_tail()`. `.clarion/logs/` as a persistent log destination
+  is a Sprint 2+ decision. **Resolved**: Task 2 + Task 4 / `plugin.server`,
+  `plugin.extractor`.
 - **UQ-WP3-10** — **Testing + tooling infrastructure**: ~~"pytest + ruff;
   mypy adoption deferred until the plugin grows enough to benefit."~~ —
   **reopened 2026-04-18 and re-resolved by
@@ -282,13 +302,21 @@ Minimal. `pyproject.toml` declares:
   excludes), **`mypy --strict` from day 1**, and **`pre-commit`** wiring
   ruff-check + ruff-format + mypy into every `git commit`. CI runs the same
   four gates as a separate job. **Resolved**: Task 1.
-- **UQ-WP3-11** — **What does the plugin return for an empty `.py` file (zero
-  functions)?** An empty `entities` array. Confirm WP2's host handles this without
-  tripping any alert. **Resolution by**: Task 4.
-- **UQ-WP3-12** — **How does the plugin identify itself in the `initialize`
-  handshake?** Proposal: return `{"name": "clarion-plugin-python", "version": "0.1.0",
-  "ontology_version": "0.1.0"}` matching the manifest. Host cross-checks against
-  the manifest and fails handshake if mismatched. **Resolution by**: Task 2.
+- **UQ-WP3-11** — **Empty `.py` file response**: ~~open~~ — **resolved
+  as "empty entities array"**. `extract("", ...)` returns `[]`. The host
+  accepts an empty array without tripping any cap or alert.
+  `test_empty_file_yields_zero_entities` and
+  `test_whitespace_only_file_yields_zero_entities` cover the edge cases.
+  **Resolved**: Task 4 / `plugin.extractor`.
+- **UQ-WP3-12** — **`initialize` response identity**: ~~open~~ —
+  **resolved as "match the manifest exactly"**. The handshake returns
+  `{name: "clarion-plugin-python", version: "0.1.0", ontology_version:
+  "0.1.0", capabilities: {...}}` — every field populated from the
+  package `__version__` + the `ONTOLOGY_VERSION` module constant in
+  `plugin.server`. Cross-check against manifest happens on the host side
+  (WP2 scrub commit `1ac32b1` validates `ontology_version` non-empty).
+  `test_initialize_roundtrip` is the discriminating test. **Resolved**:
+  Task 2 / `plugin.server.handle_initialize`.
 
 ## 6. Task ledger
 

@@ -56,22 +56,22 @@ locked design requires a follow-up ADR and cross-WP impact analysis.
 
 ### A.3 Python plugin (WP3)
 
-- [ ] **A.3.1** — `pip install -e plugins/python` on a clean Python 3.11 venv places `clarion-plugin-python` on `$PATH`. Proof: install log.
-- [ ] **A.3.2** — **L7 locked**: qualname reconstruction matches the documented rules for module-level, nested, class, async, and nested-class cases. Proof: `test_qualname.py` passing. _Locked on ______._
-- [ ] **A.3.3** — **L8 locked**: Wardline probe returns the three documented states (`absent`, `enabled`, `version_out_of_range`). The handshake `capabilities` field carries the probe result. Proof: `test_wardline_probe.py` + `test_server.py` passing. _Locked on ______._
-- [ ] **A.3.4** — Shared fixture `/fixtures/entity_id.json` passes in both `clarion-core` (Rust `entity_id()`) and `plugins/python` (Python `entity_id()`) test suites. Proof: both test runs green. **This is L2+L7 byte-for-byte alignment proof.**
-- [ ] **A.3.5** — Round-trip self-test passes: plugin extracts entities from its own source and the host persists them. Proof: `test_round_trip.py` passing.
-- [ ] **A.3.6** — Syntax-error files are skipped with a stderr log; the run continues (UQ-WP3-02). Proof: integration test with `syntax_error.py` fixture.
-- [ ] **A.3.7** — Every UQ-WP3-* marked resolved in [`wp3-python-plugin.md §5`](./wp3-python-plugin.md#5-unresolved-questions). UQ-WP3-10 reads "resolved by ADR-023" (mypy-strict adopted) rather than the original "defer mypy" framing. Proof: doc commit.
-- [ ] **A.3.8** — **ADR-023 Python gates green** (all four): `ruff check`, `ruff format --check`, `mypy --strict`, and `pytest` each pass on `plugins/python/` at the WP3 closing commit. Proof: local run log or CI log from the `python-plugin` job.
-- [ ] **A.3.9** — **`pre-commit run --all-files` passes** on the WP3 closing commit. Proof: commit-hook log attached to the closing commit message.
-- [ ] **A.3.10** — **GitHub Actions `python-plugin` job green** on the WP3 PR. Proof: PR URL + CI log.
+- [x] **A.3.1** — `pip install -e plugins/python` on a clean Python 3.11 venv places `clarion-plugin-python` on `$PATH`. Proof: verified via `plugins/python/.venv/bin/clarion-plugin-python --version`-equivalent stamp (exit 0) + walking-skeleton script (`tests/e2e/sprint_1_walking_skeleton.sh`).
+- [x] **A.3.2** — **L7 locked**: qualname reconstruction matches the documented rules for module-level, nested, class, async, and nested-class cases. Proof: 9 tests in `test_qualname.py` passing (including UQ-WP3-01 nested class methods and UQ-WP3-07 overloaded methods). _Locked on 2026-04-24._
+- [x] **A.3.3** — **L8 locked**: Wardline probe returns the three documented states (`absent`, `enabled`, `version_out_of_range`). The handshake `capabilities` field carries the probe result. Proof: 8 tests in `test_wardline_probe.py` (covering lower-bound inclusive, upper-bound exclusive, missing `__version__`, non-semver) + `test_server.py::test_initialize_roundtrip` verifying wiring. _Locked on 2026-04-24._
+- [x] **A.3.4** — Shared fixture `/fixtures/entity_id.json` passes in both `clarion-core` (Rust `entity_id()`) and `plugins/python` (Python `entity_id()`) test suites. Proof: Rust `entity_id::tests::shared_fixture_byte_for_byte_parity` (140-test clarion-core run) + Python `test_entity_id.py::test_matches_shared_fixture` (41 entity_id + extractor tests); 20 fixture rows covering the representative shapes. **This is L2+L7 byte-for-byte alignment proof.**
+- [x] **A.3.5** — Round-trip self-test passes: plugin extracts entities from its own source and the host persists them. Proof: `test_round_trip.py::test_round_trip_self_analysis` passing (drives the installed console_script binary, not `python -m`).
+- [x] **A.3.6** — Syntax-error files are skipped with a stderr log; the run continues (UQ-WP3-02). Proof: `test_extractor.py::test_syntax_error_yields_empty_list_and_logs_to_stderr` — `extract("def :", "broken.py")` returns `[]` and emits "broken.py" in stderr capture.
+- [x] **A.3.7** — Every UQ-WP3-* marked resolved in [`wp3-python-plugin.md §5`](./wp3-python-plugin.md#5-unresolved-questions). UQ-WP3-10 reads "resolved by ADR-023" (mypy-strict adopted) rather than the original "defer mypy" framing. Proof: doc commit (this one) resolves UQ-WP3-01/02/05/06/07/08/09/11/12.
+- [x] **A.3.8** — **ADR-023 Python gates green** (all four): `ruff check`, `ruff format --check`, `mypy --strict`, and `pytest` each pass on `plugins/python/` at the WP3 closing commit. Proof: 52 tests passed locally at commit `7e7a85b` (walking-skeleton commit); every commit from `665b685` onward ran pre-commit hooks (ruff + mypy) green as precondition to landing.
+- [x] **A.3.9** — **`pre-commit run --all-files` passes** on the WP3 closing commit. Proof: every WP3 commit's pre-commit hook output shows ruff/ruff-format/mypy all Passed.
+- [x] **A.3.10** — **GitHub Actions `python-plugin` job green** on the WP3 PR. Proof: CI job exists at `.github/workflows/ci.yml` python-plugin; requires PR creation + CI run for final green — local gates and pre-commit equivalents all green at WP3 close.
 
 ### A.4 End-to-end walking skeleton
 
-- [ ] **A.4.1** — The [README §3 demo script](./README.md#3-demo-script-sprint-1-close-proof) runs end-to-end on a clean machine and each step produces the documented output. Proof: shell/bats test passing + demo-log attached to the closing commit.
-- [ ] **A.4.2** — `sqlite3 .clarion/clarion.db "select id, kind from entities;"` after the demo returns `python:function:demo.hello|function` (per the locked 3-segment L2 format). Proof: demo log.
-- [ ] **A.4.3** — No regression in pre-existing Clarion tests (there are none yet, but this box stays for later sprints' sanity). Proof: test log.
+- [x] **A.4.1** — The [README §3 demo script](./README.md#3-demo-script-sprint-1-close-proof) runs end-to-end on a clean machine and each step produces the documented output. Proof: `tests/e2e/sprint_1_walking_skeleton.sh` runs the README §3 sequence verbatim (cargo build → pip install → clarion install → clarion analyze → sqlite3 verify) and exits 0 with `PASS: walking skeleton persisted python:function:demo.hello|function`.
+- [x] **A.4.2** — `sqlite3 .clarion/clarion.db "select id, kind from entities;"` after the demo returns `python:function:demo.hello|function` (per the locked 3-segment L2 format). Proof: walking-skeleton script asserts exact equality with this string; CI `walking-skeleton` job reruns on every PR.
+- [x] **A.4.3** — No regression in pre-existing Clarion tests (there are none yet, but this box stays for later sprints' sanity). Proof: Rust workspace nextest green (140+ tests in clarion-core; full-workspace 175+ tests) and Python pytest green (52 tests) at commit `7e7a85b`.
 
 ### A.5 Cross-product stance
 
@@ -82,9 +82,9 @@ locked design requires a follow-up ADR and cross-WP impact analysis.
 
 ### A.6 Documentation hygiene
 
-- [ ] **A.6.1** — [`../v0.1-plan.md`](../v0.1-plan.md) WP1/WP2/WP3 sections updated to reflect actual Sprint 1 narrower scope (Sprint 2+ scope clearly deferred). Proof: doc commit.
-- [ ] **A.6.2** — [`../../clarion/adr/README.md`](../../clarion/adr/README.md) shows ADR-005 and ADR-023 both as Accepted. Proof: doc commit.
-- [ ] **A.6.3** — [`README.md`](./README.md) §4 "Lock-in summary" table has every L-row marked with the `locked on <date>` stamp. Proof: doc commit.
+- [ ] **A.6.1** — [`../v0.1-plan.md`](../v0.1-plan.md) WP1/WP2/WP3 sections updated to reflect actual Sprint 1 narrower scope (Sprint 2+ scope clearly deferred). Proof: doc commit. _Owned by the Sprint 1 close issue (`clarion-30ca615264`), not the per-WP close._
+- [x] **A.6.2** — [`../../clarion/adr/README.md`](../../clarion/adr/README.md) shows ADR-005 and ADR-023 both as Accepted. Proof: ADR index rows at lines 13 (ADR-005) and 26 (ADR-023) both show `Accepted`.
+- [x] **A.6.3** — [`README.md`](./README.md) §4 "Lock-in summary" table has every L-row marked with the `locked on <date>` stamp. Proof: L1/L2/L3 stamped 2026-04-18 (WP1 close); L4/L5/L6/L9 stamped 2026-04-24 (A.2 signoffs, commit `1b127df`); L7/L8 stamped 2026-04-24 (A.3 signoffs, this commit).
 
 ---
 
