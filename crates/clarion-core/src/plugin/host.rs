@@ -1244,12 +1244,24 @@ ontology_version = "0.1.0"
             "must have CLA-INFRA-MANIFEST-UNSUPPORTED-CAPABILITY; got: {findings:?}"
         );
 
-        // Verify that no analyze_file was sent: host writer should not contain
-        // "analyze_file". (Writer holds bytes the host sent after the reader was built.)
+        // Verify that neither analyze_file NOR initialized was sent. The
+        // handshake path must refuse at step 3 (capability validation) AFTER
+        // the initialize request/response and BEFORE the initialized
+        // notification — the plugin must not observe the initialized
+        // notification that would transition it to Ready, because we are
+        // about to shut it down.
+        //
+        // Closes clarion-5578157797 (the negative assertion was documented
+        // in A.2.12's signoff language but never verified by a test).
         let written = String::from_utf8_lossy(host.writer_bytes_test());
         assert!(
             !written.contains("analyze_file"),
             "analyze_file must not be sent after capability refusal; writer contained: {written}"
+        );
+        assert!(
+            !written.contains(r#""method":"initialized""#),
+            "initialized notification must not be sent after capability refusal; \
+             writer contained: {written}"
         );
     }
 
@@ -2066,6 +2078,288 @@ ontology_version = "0.1.0"
     }
 
     // ── Test helpers ──────────────────────────────────────────────────────────
+
+    // ── analyze_file error payload ───────────────────────────────────────────
+
+    /// A plugin that returns a JSON-RPC error response to `analyze_file`
+    /// surfaces as `HostError::Protocol`. Exercises the
+    /// `ResponsePayload::Error` arm at the end of `read_response_matching`
+    /// that the prior tests never reached — the mock always returns
+    /// success-shaped responses.
+    ///
+    /// Closes clarion-e190f1e72b.
+    #[test]
+    fn analyze_file_error_payload_returns_protocol_error() {
+        let manifest = compliant_manifest();
+        let mut mock = MockPlugin::new_compliant();
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        let sample = project_dir.path().join("sample.mock");
+        std::fs::write(&sample, b"").unwrap();
+
+        // Craft an error-shaped response at the next expected id.
+        let response_id = host.next_request_id_test();
+        let response_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": response_id,
+            "error": {
+                "code": -32_001,
+                "message": "plugin refused to analyze this file",
+            }
+        });
+        let body = serde_json::to_vec(&response_json).unwrap();
+        {
+            let reader = host.reader_mut_test();
+            let pos_before = reader.position();
+            let old_end = reader.get_ref().len() as u64;
+            let mut framed: Vec<u8> = Vec::new();
+            write_frame(&mut framed, &Frame { body }).unwrap();
+            reader.get_mut().extend_from_slice(&framed);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
+        }
+
+        let err = host
+            .analyze_file(&sample)
+            .expect_err("error-payload response must surface as Err");
+        match err {
+            HostError::Protocol(e) => {
+                assert_eq!(e.code, -32_001);
+                assert!(
+                    e.message.contains("refused"),
+                    "error message must pass through; got: {:?}",
+                    e.message
+                );
+            }
+            other => panic!("expected HostError::Protocol; got {other:?}"),
+        }
+    }
+
+    // ── Content-Length ceiling through PluginHost ────────────────────────────
+
+    /// An oversize response frame surfaces as `HostError::Transport(FrameTooLarge)`
+    /// through `PluginHost::analyze_file`. `transport_03` tests the
+    /// transport layer in isolation but the host-level wiring was
+    /// previously untested — A.2.3's "8 MiB Content-Length ceiling has
+    /// both positive and negative tests" was only half true.
+    ///
+    /// Uses a tight artificial ceiling (1 KiB) so the pathological frame
+    /// is small enough to build in a test.
+    ///
+    /// Closes clarion-58eb4567b6.
+    #[test]
+    fn content_length_ceiling_surfaces_through_plugin_host() {
+        // Build host with a tight ceiling.
+        let manifest = compliant_manifest();
+        let project_dir = TempDir::new().expect("tmpdir");
+        let sample = project_dir.path().join("sample.mock");
+        std::fs::write(&sample, b"").unwrap();
+
+        // Prepare the initialize response using the usual mock path, then
+        // manually reconstruct a PluginHost with a 1-KiB ceiling.
+        let mut resp_mock = MockPlugin::new_compliant();
+        let init_req = crate::plugin::protocol::make_request(
+            "initialize",
+            &InitializeParams {
+                protocol_version: "1.0".to_owned(),
+                project_root: project_dir.path().to_string_lossy().into_owned(),
+            },
+            1,
+        );
+        let init_req_body = serde_json::to_vec(&init_req).unwrap();
+        write_frame(
+            resp_mock.stdin(),
+            &Frame {
+                body: init_req_body,
+            },
+        )
+        .unwrap();
+        resp_mock.tick().expect("tick init");
+        let init_resp_bytes = drain_mock_output(&mut resp_mock);
+
+        // Append an analyze_file response that's intentionally over the
+        // tight 1-KiB ceiling.
+        let mut all_bytes = init_resp_bytes;
+        let huge_payload = "x".repeat(2 * 1024);
+        let response_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "entities": [],
+                "padding": huge_payload,
+            }
+        });
+        let response_body = serde_json::to_vec(&response_json).unwrap();
+        let mut framed = Vec::new();
+        write_frame(
+            &mut framed,
+            &Frame {
+                body: response_body,
+            },
+        )
+        .unwrap();
+        all_bytes.extend_from_slice(&framed);
+
+        let reader = Cursor::new(all_bytes);
+        let writer: Vec<u8> = Vec::new();
+        let mut host =
+            PluginHost::new_inner(manifest, project_dir.path().to_path_buf(), reader, writer);
+        host.ceiling = crate::plugin::limits::ContentLengthCeiling::new(1024);
+        host.handshake().expect("handshake must succeed");
+
+        let err = host
+            .analyze_file(&sample)
+            .expect_err("oversize analyze_file response must fail");
+        match err {
+            HostError::Transport(TransportError::FrameTooLarge { observed, ceiling }) => {
+                assert!(
+                    observed > ceiling,
+                    "observed must exceed ceiling: {observed} > {ceiling}"
+                );
+                assert_eq!(ceiling, 1024, "ceiling must match configured value");
+            }
+            other => panic!("expected Transport(FrameTooLarge); got {other:?}"),
+        }
+    }
+
+    // ── Cross-plugin identity fabrication ────────────────────────────────────
+
+    /// A plugin whose manifest declares `plugin_id = "mock"` must not be
+    /// able to emit an entity with `id = "python:function:foo"` — that
+    /// would let one plugin spoof another plugin's namespace and corrupt
+    /// the entities table's `plugin_id` column.
+    ///
+    /// T4 covers the wrong-qualified-name case; this test covers the
+    /// wrong-plugin-id-segment case, the highest-value identity-
+    /// fabrication scenario.
+    ///
+    /// Closes clarion-e7789f2f76.
+    #[test]
+    fn cross_plugin_plugin_id_spoof_is_rejected() {
+        let manifest = compliant_manifest(); // plugin_id = "mock"
+        let mut mock = MockPlugin::new_compliant();
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        let sample = project_dir.path().join("sample.mock");
+        std::fs::write(&sample, b"").unwrap();
+
+        // Valid kind, valid qualified_name; only plugin_id segment is
+        // wrong. entity_id("mock", "function", "stub") would produce
+        // "mock:function:stub"; we emit "python:function:stub".
+        let response_id = host.next_request_id_test();
+        let response_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": response_id,
+            "result": {
+                "entities": [{
+                    "id": "python:function:stub",
+                    "kind": "function",
+                    "qualified_name": "stub",
+                    "source": { "file_path": sample.to_string_lossy().into_owned() }
+                }]
+            }
+        });
+        let body = serde_json::to_vec(&response_json).unwrap();
+        {
+            let reader = host.reader_mut_test();
+            let pos_before = reader.position();
+            let old_end = reader.get_ref().len() as u64;
+            let mut framed: Vec<u8> = Vec::new();
+            write_frame(&mut framed, &Frame { body }).unwrap();
+            reader.get_mut().extend_from_slice(&framed);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
+        }
+
+        let result = host.analyze_file(&sample).expect("must not error");
+        assert!(
+            result.is_empty(),
+            "cross-plugin-id entity must be dropped; got {} accepted",
+            result.len()
+        );
+        let findings = host.take_findings();
+        let count = findings
+            .iter()
+            .filter(|f| f.subcode == FINDING_ENTITY_ID_MISMATCH)
+            .count();
+        assert_eq!(
+            count, 1,
+            "expected exactly one FINDING_ENTITY_ID_MISMATCH; got {count} in {findings:?}"
+        );
+    }
+
+    // ── Drain-until-match: stale frames discarded, matching accepted ─────────
+
+    /// The drain-until-match helper (introduced for clarion-c08586a2da /
+    /// clarion-ff2831eec0) must accept a matching response that follows
+    /// one or more stale frames. Without this property, stale frames
+    /// would convert into false transport errors on the happy path.
+    ///
+    /// Sends a frame with id=99 (stale) followed by the real id=2
+    /// response; `analyze_file` should succeed and return the entities.
+    ///
+    /// Closes clarion-049bbe44ce (response-id mismatch surface).
+    #[test]
+    fn analyze_file_drains_stale_frames_before_matching_response() {
+        let manifest = compliant_manifest();
+        let mut mock = MockPlugin::new_compliant();
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        let sample = project_dir.path().join("sample.mock");
+        std::fs::write(&sample, b"").unwrap();
+
+        let expected_id = host.next_request_id_test();
+
+        // Frame 1: stale response, wrong id.
+        let stale_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 999_999,
+            "result": { "entities": [] }
+        });
+        let stale_body = serde_json::to_vec(&stale_json).unwrap();
+
+        // Frame 2: real response at expected id, with one compliant entity.
+        let real_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": expected_id,
+            "result": {
+                "entities": [{
+                    "id": "mock:function:stub",
+                    "kind": "function",
+                    "qualified_name": "stub",
+                    "source": { "file_path": sample.to_string_lossy().into_owned() }
+                }]
+            }
+        });
+        let real_body = serde_json::to_vec(&real_json).unwrap();
+
+        let mut framed: Vec<u8> = Vec::new();
+        write_frame(&mut framed, &Frame { body: stale_body }).unwrap();
+        write_frame(&mut framed, &Frame { body: real_body }).unwrap();
+        {
+            let reader = host.reader_mut_test();
+            let pos_before = reader.position();
+            let old_end = reader.get_ref().len() as u64;
+            reader.get_mut().extend_from_slice(&framed);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
+        }
+
+        let result = host
+            .analyze_file(&sample)
+            .expect("drain-until-match must succeed past stale frame");
+        assert_eq!(
+            result.len(),
+            1,
+            "matching response must yield its entity; got {} entities",
+            result.len()
+        );
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
 
     fn append_mock_output_to_host_reader(mock: &mut MockPlugin, host_reader: &mut Cursor<Vec<u8>>) {
         let new_bytes = drain_mock_output(mock);
