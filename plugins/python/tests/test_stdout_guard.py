@@ -30,9 +30,9 @@ def test_install_stdio_blocks_print() -> None:
         capture_output=True,
         timeout=5,
     )
-    assert (
-        proc.returncode == 42
-    ), f"expected guard-fired exit 42, got {proc.returncode}; stderr={proc.stderr!r}"
+    assert proc.returncode == 42, (
+        f"expected guard-fired exit 42, got {proc.returncode}; stderr={proc.stderr!r}"
+    )
     assert b"guard-fired" in proc.stderr
 
 
