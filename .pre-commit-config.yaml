@@ -13,4 +13,5 @@ repos:
       - id: mypy
         files: ^plugins/python/(src|tests)/.*\.py$
         args: [--strict, --config-file=plugins/python/pyproject.toml]
-        additional_dependencies: []
+        additional_dependencies:
+          - pytest>=8.0
