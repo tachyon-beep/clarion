@@ -37,7 +37,9 @@ ontology_version = "0.1.0"
 
 [integrations.wardline]
 # Verified present in Wardline source (src/wardline/core/registry.py:55,
-# src/wardline/__init__.py:3) pre-sprint 2026-04-18. The probe runs
-# against a real `pip install wardline` in the dev venv.
-min_version = "0.1.0"
-max_version = "0.2.0"
+# src/wardline/__init__.py:3) at sprint close 2026-04-28; current
+# Wardline version is 1.0.0. Pin range admits 1.x; 2.0.0 is an exclusive
+# upper bound so a future major version triggers an explicit re-pin
+# rather than silent drift.
+min_version = "1.0.0"
+max_version = "2.0.0"

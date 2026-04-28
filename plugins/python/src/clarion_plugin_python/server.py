@@ -38,8 +38,8 @@ ONTOLOGY_VERSION = "0.1.0"
 # `[integrations.wardline]`). Kept as module constants so Task 7's
 # manifest values match by inspection; a future sprint can flow these
 # through from the parsed manifest on demand.
-WARDLINE_MIN_VERSION = "0.1.0"
-WARDLINE_MAX_VERSION = "0.2.0"
+WARDLINE_MIN_VERSION = "1.0.0"
+WARDLINE_MAX_VERSION = "2.0.0"
 
 # Plugin-side Content-Length sanity cap. Matches the host's ADR-021 §2b
 # default (8 MiB) so the plugin never emits a frame the host would kill us

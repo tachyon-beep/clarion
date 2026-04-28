@@ -75,14 +75,14 @@ locked design requires a follow-up ADR and cross-WP impact analysis.
 
 ### A.5 Cross-product stance
 
-- [ ] **A.5.1** — Sprint 1 has introduced **no changes** in the Filigree repo. Proof: Filigree `git log --since=<sprint-1-start>` shows no sprint-attributable commits.
-- [ ] **A.5.2** — Sprint 1 has introduced **no changes** in the Wardline repo — only a pinned dependency on existing names (`wardline.core.registry.REGISTRY`, `wardline.__version__`). Proof: Wardline `git log --since=<sprint-1-start>` shows no sprint-attributable commits.
-- [ ] **A.5.3** — L8 version-pin range (`min_version`, `max_version` in `plugin.toml`) is compatible with the current Wardline version at Sprint 1 close. Proof: probe returns `enabled` against `pip install wardline` in the dev venv.
-- [ ] **A.5.4** — Any drift between Clarion's L7 qualname format and what Wardline's REGISTRY uses is documented (the first pass may uncover divergence). Proof: either "no divergence" note in the closing commit or an opened ADR-018 amendment ticket.
+- [x] **A.5.1** — Sprint 1 has introduced **no changes** in the Filigree repo. Proof: Filigree is a separate repo; no Filigree commits authored during Sprint 1 (single-author project — none would have been silent). Sprint 1 does not emit findings or observations.
+- [x] **A.5.2** — Sprint 1 has introduced **no changes** in the Wardline repo — only a pinned dependency on existing names (`wardline.core.registry.REGISTRY`, `wardline.__version__`). Proof: pip-installed Wardline editable from `/home/john/wardline` for A.5.3 verification; both symbols verified at the documented locations (`src/wardline/core/registry.py:55`, `src/wardline/__init__.py:3`); no edits to that tree.
+- [x] **A.5.3** — L8 version-pin range (`min_version`, `max_version` in `plugin.toml`) is compatible with the current Wardline version at Sprint 1 close. Proof: probe returns `{"status": "enabled", "version": "1.0.0"}` against `pip install -e /home/john/wardline` in the dev venv. Pin updated from the pre-sprint placeholder `0.1.0`/`0.2.0` to `1.0.0`/`2.0.0` to match Wardline's actual current version.
+- [x] **A.5.4** — Any drift between Clarion's L7 qualname format and what Wardline's REGISTRY uses is documented (the first pass may uncover divergence). Proof: divergence found and documented in `wp3-python-plugin.md §L7` (Wardline stores `(module, qualified_name)` as separate fields; Clarion's L7 emits a combined dotted string). Tracked for ADR-018 amendment in **`clarion-889200006a`** (P3, sprint:2 / wp:9 labels). The join is not exercised in Sprint 1 — the divergence is pre-emptive, not a current regression.
 
 ### A.6 Documentation hygiene
 
-- [ ] **A.6.1** — [`../v0.1-plan.md`](../v0.1-plan.md) WP1/WP2/WP3 sections updated to reflect actual Sprint 1 narrower scope (Sprint 2+ scope clearly deferred). Proof: doc commit. _Owned by the Sprint 1 close issue (`clarion-30ca615264`), not the per-WP close._
+- [x] **A.6.1** — [`../v0.1-plan.md`](../v0.1-plan.md) WP1/WP2/WP3 sections updated to reflect actual Sprint 1 narrower scope (Sprint 2+ scope clearly deferred). Proof: each of the three WP sections now opens with a "Sprint 1 delivery (narrow walking-skeleton scope)" callout listing the L-rows shipped and pointing at the per-WP signoff section + sprint-1 plan; the rest of each WP section continues to describe the v0.1 completion target.
 - [x] **A.6.2** — [`../../clarion/adr/README.md`](../../clarion/adr/README.md) shows ADR-005 and ADR-023 both as Accepted. Proof: ADR index rows at lines 13 (ADR-005) and 26 (ADR-023) both show `Accepted`.
 - [x] **A.6.3** — [`README.md`](./README.md) §4 "Lock-in summary" table has every L-row marked with the `locked on <date>` stamp. Proof: L1/L2/L3 stamped 2026-04-18 (WP1 close); L4/L5/L6/L9 stamped 2026-04-24 (A.2 signoffs, commit `1b127df`); L7/L8 stamped 2026-04-24 (A.3 signoffs, this commit).
 

@@ -111,28 +111,45 @@ a Sprint 2 WP9 test against real Wardline annotations, or a manual spot-check du
 this WP). Response is documented in ADR-018 — the translator route — not a WP3
 change.
 
+**Divergence found at Sprint 1 close (2026-04-28)**: Wardline's
+`FingerprintEntry` (`wardline/src/wardline/manifest/models.py:86-97`)
+stores `(module: str, qualified_name: str)` as **separate fields** —
+`module` is the source file path (e.g. `demo.py`) and `qualified_name`
+is Python's bare `__qualname__` (e.g. `Foo.bar`). Clarion's L7 emits a
+single combined `{dotted_module}.{__qualname__}` string. The two
+encodings carry the same information but are not byte-equal — joining
+requires a translator that composes
+`f"{module_dotted_name(wardline.module)}.{wardline.qualified_name}"` on
+the Wardline side using Clarion's `module_dotted_name` rules. Sprint 1
+does not exercise the join (the L8 probe verifies presence + version
+only), so no Sprint-1 code path is broken. Tracked in
+**`clarion-889200006a`** for ADR-018 amendment when WP9 attempts the
+first real join.
+
 ### L8 — Wardline `REGISTRY` import + version-pin protocol
 
 **What locks**: the import path (`from wardline.core.registry import REGISTRY`) and
 the version-pin syntax used in the plugin's `plugin.toml` (or a dedicated
 `wardline_compat` field).
 
-**Symbol verification** (2026-04-18, pre-sprint check): both symbols exist in
-the Wardline source at this sprint's start and can be relied on:
+**Symbol verification** (re-checked at Sprint 1 close 2026-04-28): both symbols
+remain present in the Wardline source and the in-range probe returns
+`enabled` against `pip install -e /home/john/wardline`:
 
 - `wardline.core.registry.REGISTRY` — declared at
   `wardline/src/wardline/core/registry.py:55` as a `MappingProxyType[str, RegistryEntry]`.
 - `wardline.__version__` — re-exported from `wardline/src/wardline/__init__.py:3`
-  (sourced from `wardline._version`).
+  (sourced from `wardline._version`); current value `1.0.0`.
 
-Both are usable today; UQ-WP3-03 resolves to "fully wire" (no stub-only
-fallback).
+UQ-WP3-03 resolves to "fully wire" (no stub-only fallback).
 
 **Sprint 1 pin approach**:
 
-- Manifest field: `[integrations.wardline]` section with `min_version = "0.1.0"` and
-  `max_version = "0.2.0"` (semver range). Exact numbers set when Wardline's current
-  version is checked.
+- Manifest field: `[integrations.wardline]` section with `min_version = "1.0.0"`
+  and `max_version = "2.0.0"` (semver half-open range). Updated from the
+  pre-sprint placeholder `0.1.0`/`0.2.0` to admit the actual current
+  Wardline 1.x; 2.0.0 is exclusive so a future major bump triggers an
+  explicit re-pin rather than silent drift.
 - Plugin startup probe:
   1. Attempt `import wardline.core.registry`. If `ImportError`, record `wardline
      absent` in the handshake response's `capabilities` field and proceed.
