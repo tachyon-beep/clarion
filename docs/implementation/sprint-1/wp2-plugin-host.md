@@ -95,25 +95,76 @@ parser + validator; WP3 ships the first real manifest.
 
 ```toml
 [plugin]
-name = "clarion-plugin-python"           # unique plugin id
+name = "clarion-plugin-python"           # package name; informational (hyphens OK, human-readable)
+plugin_id = "python"                      # identifier fed to entity_id(); must match [a-z][a-z0-9_]* (ADR-022)
 version = "0.1.0"                         # semver
 protocol_version = "1.0"                  # matches ADR-002 version
 executable = "clarion-plugin-python"      # command on PATH (see L9)
-language = "python"                       # informational; plugin_id in L2 EntityId comes from [plugin].name
+language = "python"                       # informational tag
 extensions = ["py"]                       # file extensions this plugin claims
 
-[capabilities]
-max_rss_mb = 512                          # prlimit on spawn (L6)
-max_runtime_seconds = 300                 # per-run wall clock
-max_content_length_bytes = 10485760       # per-frame ceiling (L6); can be below the core's ceiling
-max_entities_per_run = 100000             # per-run entity count cap (L6)
+[capabilities.runtime]
+# Declarations, not enforcements. Per ADR-021 §Layer 1, these values describe
+# the plugin's expected envelope; the core uses them for sanity-warnings and
+# to pick a floor no stricter than the plugin requested. The four Layer-2
+# minimums (Content-Length ceiling, entity-count cap, RSS limit, path jail)
+# are core-enforced with fixed defaults a plugin cannot raise — see §L6.
+expected_max_rss_mb = 512                 # plugin's own RSS estimate; effective prlimit = min(this, core default 2 GiB)
+expected_entities_per_file = 5000         # triggers CLA-INFRA-PLUGIN-ENTITY-OVERRUN-WARNING well before the 500k hard cap (warning impl deferred — see Task 4)
+wardline_aware = true                     # plugin reads wardline.core.registry.REGISTRY (WP3 L8)
+reads_outside_project_root = false        # opt-out declaration; v0.1 refuses `true` at initialize (see Task 1 + Task 6)
 
 [ontology]
 entity_kinds = ["function", "class", "module", "decorator"]
 edge_kinds = ["imports", "calls", "decorates", "contains"]
-rule_id_prefix = "CLA-PY-"                # every emitted rule-ID must start with this
+rule_id_prefix = "CLA-PY-"                # every emitted rule-ID must start with this; must match ADR-022 grammar (see Task 1)
 ontology_version = "0.1.0"                # bump when entity/edge/rule set changes
 ```
+
+**Reserved edge kinds**. Plugins may list the four core-reserved edge kinds
+(`contains`, `guides`, `emits_finding`, `in_subsystem`) in `edge_kinds` to
+signal they emit them, binding themselves to the core's semantics per
+ADR-022. The semantics of those four kinds are fixed across all plugins;
+plugins may not redefine them. Sprint 1's manifest schema carries no
+per-edge-kind semantic annotations, so this compliance is automatic —
+a manifest listing `contains` in `edge_kinds` parses successfully (Task 1
+test).
+
+**Rule-ID namespace**. Per ADR-022, `CLA-INFRA-*` is core-only (pipeline
+findings), `CLA-FACT-*` is shared (any plugin or the core), and
+`CLA-{PLUGIN_ID_UPPERCASE}-*` is reserved to that plugin. A manifest
+declaring `rule_id_prefix = "CLA-INFRA-"` or `"CLA-FACT-"` is rejected at
+parse (Task 1); emission-time enforcement of off-namespace rule IDs
+(`CLA-INFRA-RULE-ID-NAMESPACE`) is deferred to the findings-emitting Tier B
+sprint — Sprint 1's walking skeleton emits no findings, so the RPC-time
+check has nothing to fire against.
+
+**Manifest-validation finding codes surfaced by this WP**:
+
+- `CLA-INFRA-MANIFEST-MALFORMED` — kind strings or `rule_id_prefix` fail
+  ADR-022's identifier grammar (`[a-z][a-z0-9_]*` for kinds,
+  `CLA-[A-Z]+(-[A-Z0-9]+)+` for rule-ID prefixes). Rejected at `initialize`;
+  plugin fails to start.
+- `CLA-INFRA-MANIFEST-RESERVED-KIND` — manifest declares `file`, `subsystem`,
+  or `guidance` in `entity_kinds`. Rejected at `initialize`.
+- `CLA-INFRA-MANIFEST-UNSUPPORTED-CAPABILITY` — manifest declares
+  `reads_outside_project_root = true`; v0.1 has no mechanism to allow it.
+  Rejected at `initialize`.
+- `CLA-INFRA-RULE-ID-NAMESPACE` — manifest declares a reserved
+  `rule_id_prefix` (`CLA-INFRA-` or `CLA-FACT-`). Rejected at parse.
+  *Emission-time* enforcement (plugin emits a rule ID outside its namespace)
+  is deferred to the findings-emitting Tier B sprint.
+- `CLA-INFRA-PLUGIN-ENTITY-OVERRUN-WARNING` — per-file entity count exceeds
+  `expected_entities_per_file`. Implementation deferred to the
+  catalog-emitting Tier B sprint (Sprint 1 is one file per invocation; the
+  warning has no useful surface area yet).
+
+**Shape note — TOML vs YAML**. WP2 specifies the manifest in TOML to match
+the `plugins.toml` convention used elsewhere in detailed-design §1;
+ADR-021 §Layer 1 and detailed-design §1 show the same data in YAML. The
+field names, types, and semantics are identical — the on-disk encoding is
+a WP2 local decision, called out here so a future reader comparing docs
+doesn't treat the TOML shape as drift.
 
 **Why now**: this schema is the core/plugin ontology boundary. Once plugins author
 manifests against it, schema changes become breaking.
@@ -240,17 +291,34 @@ New workspace dependencies introduced by WP2:
 
 ## 5. Unresolved questions
 
-- **UQ-WP2-01** — **Plugin discovery convention (L9)**: proposal is PATH + manifest
-  beside binary; see §2. **Resolution by**: Task 5.
-- **UQ-WP2-02** — **JSON-RPC library choice**: hand-rolled over `serde_json` vs
-  `jsonrpsee` (async, batteries-included) vs `jsonrpc-core` (mature but older).
-  Hand-rolled wins on dep-surface; `jsonrpsee` wins on feature set (batching,
-  bidirectional notifications). Walking skeleton uses unidirectional unary → hand-roll
-  is enough. **Proposal**: hand-roll. **Resolution by**: Task 2.
-- **UQ-WP2-03** — **Path jail semantics**: does canonicalisation follow symlinks? If
-  yes, a symlink pointing outside the analysis root is rejected. If no, a symlink
-  *within* the root that resolves outside is silently admitted. **Proposal**: yes,
-  follow symlinks; reject-on-escape. **Resolution by**: Task 4.
+- **UQ-WP2-01** — **Plugin discovery convention (L9)**: ~~open~~ —
+  **resolved as PATH + neighbouring `plugin.toml`** per the §2 L9 proposal.
+  `discovery::discover_plugins` scans `$PATH` entries for
+  `clarion-plugin-*` basenames and loads `plugin.toml` from next to the
+  binary (install-prefix fallback deferred — WP3's `pip install -e` places
+  both binary and manifest in the same venv `bin/` directory, so the
+  fallback path has no Sprint-1 surface). World-writable `$PATH` entries
+  are refused at discovery time (`DiscoveryError::WorldWritableDir`;
+  scrub commit `7c0e396`). **Resolved**: Task 5 / `plugin::discovery`.
+- **UQ-WP2-02** — **JSON-RPC library choice**: ~~open~~ —
+  **resolved as hand-rolled over `serde_json`** per the §UQ-WP2-02
+  proposal. `transport.rs` owns Content-Length framing + frame read/write;
+  `protocol.rs` owns typed request/response structs for the L4 method set.
+  No `jsonrpsee` / `jsonrpc-core` dep added. **Resolved**: Task 2 /
+  `plugin::{transport, protocol}`.
+- **UQ-WP2-03** — **Path jail semantics**: ~~open~~ —
+  **resolved as symlink-following `canonicalize` + `starts_with`** per the
+  §UQ-WP2-03 proposal. `jail::jail` canonicalises both root and candidate
+  via `std::fs::canonicalize` (which follows symlinks) and rejects any
+  candidate whose canonical form escapes the canonical root with
+  `JailError::EscapedRoot`. A symlink *within* the root that resolves
+  outside is rejected; a non-existent path is rejected. Caller-decides
+  drop-vs-kill policy (per ADR-021 §2a: drop-entity-not-plugin on first
+  offense; sub-breaker kills on >10/60s). **Note**: this is canonicalize-time
+  only — TOCTOU window for any downstream code that re-opens the path is
+  tracked in `clarion-928349b60f` and becomes critical when WP6 briefing
+  code reads `AcceptedEntity.source_file_path`. **Resolved**: Task 4 /
+  `plugin::jail`.
 - **UQ-WP2-04** — **Content-Length ceiling default**: ~~open~~ —
   **resolved by ADR-021 §2b**. Default ceiling is **8 MiB** per frame,
   floor 1 MiB, config key `clarion.yaml:plugin_limits.max_frame_bytes`
@@ -266,46 +334,58 @@ New workspace dependencies introduced by WP2:
   On exceed: current in-flight batch flushed, plugin killed, run enters
   partial-results state, `CLA-INFRA-PLUGIN-ENTITY-CAP` emitted.
   **Resolved**: Task 4.
-- **UQ-WP2-06** — **prlimit on non-Linux**: ADR-021 §2d names both paths
-  (`prlimit(RLIMIT_AS)` on Linux, `setrlimit(RLIMIT_AS)` on macOS — both
-  POSIX). Sprint 1 scope is **Linux-only** per
-  [WP1 §1 "Explicitly out of scope"](./wp1-scaffold.md#1-scope-sprint-1-narrow),
-  so the macOS path described in ADR-021 is out of scope *for Sprint 1
-  implementation* even though it's in scope *for the ADR*. Do we
-  `#[cfg(target_os = "linux")]` the enforcement or compile an error?
-  **Proposal**: `#[cfg]`-gate the Linux implementation; on non-Linux, log
-  a warning once and proceed without the limit (the ADR-021 §2d macOS
-  path lands when Sprint N adds macOS support). **Resolution by**: Task 4.
-- **UQ-WP2-07** — **Shape of plugin non-entity output**: does the plugin write progress
-  updates to stderr (free-form, the host just tees it to `tracing::info!`) or via JSON-RPC
-  notifications (`$/progress`)? Walking skeleton doesn't need progress, but the
-  convention is a lock-in-by-omission if not decided. **Proposal**: stderr is
-  free-form and forwarded to tracing; progress notifications are deferred. Plugins
-  that need structured progress add it in a later sprint. **Resolution by**: Task 3.
-- **UQ-WP2-08** — **Plugin stdout discipline**: plugins must use stdout for JSON-RPC
-  only. Stray `print()` statements in a Python plugin will corrupt framing. How do
-  we enforce? **Proposal**: document in the WP3 plugin-author guide; the Python
-  plugin bootstraps by replacing `sys.stdout` with a non-writable wrapper during
-  initialisation. Not a core enforcement; plugin-level discipline. **Resolution by**:
-  Task 3 (documented in plugin-author docs).
-- **UQ-WP2-09** — **Manifest hot-reload**: should the host re-read the manifest on
-  each analyze run, or cache it across runs within one `serve` session? Sprint 1 only
-  has `analyze`, so always-reload is simplest. **Proposal**: always-reload in Sprint 1;
-  revisit at WP8. **Resolution by**: Task 2.
+- **UQ-WP2-06** — **prlimit on non-Linux**: ~~open~~ —
+  **resolved as `#[cfg(target_os = "linux")]`-gated enforcement**.
+  `limits::apply_prlimit_as` (plus `apply_prlimit_nofile_nproc` from
+  scrub commit `bd92600`) are Linux-only; non-Linux targets log once at
+  spawn and proceed without the RSS / fd / proc limits. macOS
+  `setrlimit` path per ADR-021 §2d lands when a future sprint adds macOS
+  support (Sprint 1 scope is Linux-only per WP1 §1). **Resolved**:
+  Task 4 / `plugin::limits`.
+- **UQ-WP2-07** — **Shape of plugin non-entity output**: ~~open~~ —
+  **resolved as captured stderr ring buffer (diverges from original
+  proposal)**. Plugin stderr is piped (not inherited) into a bounded
+  64 KiB ring buffer on `PluginHost`, accessible via
+  `host.stderr_tail() -> Option<String>` for diagnostics (scrub commit
+  `b3c91a7`). This is a narrower surface than the original "tee to
+  `tracing::info!`" proposal — the scrub narrowed it because an
+  unbounded tee lets a chatty plugin flood core-side log drains.
+  Structured progress notifications (`$/progress`) are deferred to a
+  later sprint as originally planned. **Resolved**: Task 3 + scrub /
+  `plugin::host` (`stderr_tail`).
+- **UQ-WP2-08** — **Plugin stdout discipline**: ~~open~~ —
+  **resolved as plugin-level discipline, not core enforcement**. WP2
+  does not intercept plugin stdout; WP3's Python plugin will bootstrap
+  by replacing `sys.stdout` with a non-writable wrapper during
+  initialisation (stray `print()` would otherwise corrupt framing). The
+  host is resilient to unexpected frames via the drain-until-match loop
+  (`MAX_DRAIN_FRAMES = 16`, scrub commit `769a177`), so stdout
+  violations surface as framing / drain-budget errors rather than
+  silent corruption. **Resolved**: Task 3 (WP2 side — no core
+  enforcement); deferred to WP3 for the Python plugin's stdout swap.
+- **UQ-WP2-09** — **Manifest hot-reload**: ~~open~~ —
+  **resolved as always-reload in Sprint 1**. `discovery::discover_plugins`
+  is invoked once per `clarion analyze` run and re-reads every
+  `plugin.toml` from disk; no in-memory manifest cache is carried across
+  runs. Manifest cache-across-`serve`-sessions is a WP8 concern. **Resolved**:
+  Task 2 / Task 5 (`plugin::{manifest, discovery}`).
 - **UQ-WP2-10** — **Crash-loop breaker parameters**: ~~open~~ —
   **resolved by ADR-002 + ADR-021 §Layer 3**. General breaker:
   **>3 crashes in 60s** → plugin disabled, `CLA-INFRA-PLUGIN-DISABLED-CRASH-LOOP`.
   Path-escape sub-breaker (ADR-021 §2a): **>10 escapes in 60s** → plugin
   killed, `CLA-INFRA-PLUGIN-DISABLED-PATH-ESCAPE`. Sprint 1 hard-codes both
   thresholds; config surface deferred to WP6. **Resolved**: Task 7.
-- **UQ-WP2-11** — **What happens if the plugin returns an `id` that doesn't
-  match the 3-segment L2 format?** **Proposal**: host validates by
-  reconstructing the `EntityId` from the entity's `plugin_id` (known — the
-  emitting plugin), `kind`, and `qualified_name` fields and comparing against
-  the returned `id`; mismatch = drop entity + emit
-  `CLA-INFRA-PLUGIN-ENTITY-ID-MISMATCH`. This is the ontology-boundary
-  enforcement (ADR-022) extended to the identity format (ADR-003).
-  **Resolution by**: Task 6.
+- **UQ-WP2-11** — **Plugin-returned `id` vs 3-segment L2 format**: ~~open~~ —
+  **resolved by identity check in `plugin::host` (T4)** per the §UQ-WP2-11
+  proposal. On every `analyze_file` response, the host reconstructs the
+  expected `EntityId` from `(plugin_id, kind, qualified_name)` and compares
+  against the returned `id`; on mismatch the entity is dropped and
+  `CLA-INFRA-PLUGIN-ENTITY-ID-MISMATCH` is emitted. This extends ADR-022
+  ontology-boundary enforcement to the ADR-003 identity format. The
+  host-level T4 test plus `cross_plugin_plugin_id_spoof_is_rejected`
+  (scrub commit `89b2da0`) cover both the shape-mismatch and cross-plugin
+  spoof attack surfaces. **Resolved**: Task 6 + scrub / `plugin::host`
+  (T4, `cross_plugin_plugin_id_spoof_is_rejected`).
 
 ## 6. Task ledger
 
@@ -318,17 +398,23 @@ New workspace dependencies introduced by WP2:
 
 Steps:
 
-- [ ] Define `Manifest`, `Capabilities`, `Ontology` structs mirroring the L5 schema. Use `serde` derive.
+- [ ] Define `Manifest`, `Capabilities`, `CapabilitiesRuntime`, `Ontology` structs mirroring the L5 schema. Use `serde` derive. `Capabilities.runtime` is the ADR-021 §Layer 1 sub-struct carrying `expected_max_rss_mb`, `expected_entities_per_file`, `wardline_aware`, `reads_outside_project_root`.
 - [ ] Write failing tests:
-  - Positive: parse a valid `plugin.toml` fixture and assert all fields populated.
+  - Positive: parse a valid `plugin.toml` fixture and assert all fields populated, including `capabilities.runtime.*`.
+  - Positive (F5 / ADR-022 §Core owns): manifest listing a core-reserved edge kind (`contains`) in `edge_kinds` parses successfully — plugins bind to core semantics by listing the kind, they do not redefine it.
   - Negative: missing `[plugin].name` returns a clear error.
-  - Negative: `max_rss_mb = 0` rejected (must be > 0).
+  - Negative: `expected_max_rss_mb = 0` rejected (must be > 0).
   - Negative: `entity_kinds = []` rejected (must declare at least one).
-  - Negative: `rule_id_prefix` not ending in `-` rejected (L5 convention: prefixes end with `-`).
+  - Negative (ADR-022 identifier grammar): an entity kind not matching `[a-z][a-z0-9_]*` (e.g. `Function`, `func-tion`, `1function`) is rejected with `CLA-INFRA-MANIFEST-MALFORMED`.
+  - Negative (ADR-022 identifier grammar): a `rule_id_prefix` not matching `CLA-[A-Z]+(-[A-Z0-9]+)+` (e.g. `PY-`, `cla-py-`, `CLA-py-`) is rejected with `CLA-INFRA-MANIFEST-MALFORMED`.
+  - Negative (ADR-022 reserved kinds): a manifest declaring `file`, `subsystem`, or `guidance` in `entity_kinds` is rejected with `CLA-INFRA-MANIFEST-RESERVED-KIND`.
+  - Negative (ADR-022 namespace registry): `rule_id_prefix = "CLA-INFRA-"` rejected with `CLA-INFRA-RULE-ID-NAMESPACE` (core-only namespace).
+  - Negative (ADR-022 namespace registry): `rule_id_prefix = "CLA-FACT-"` rejected with `CLA-INFRA-RULE-ID-NAMESPACE` (shared namespace; plugins must use their own).
+  - Negative (ADR-021 §Layer 1): a manifest declaring `reads_outside_project_root = true` produces a validator result that the supervisor (Task 6) surfaces at `initialize` as `CLA-INFRA-MANIFEST-UNSUPPORTED-CAPABILITY`. Task 1's test asserts the validator flags the manifest; Task 6's test asserts the handshake rejection path.
 - [ ] Run tests; expect failures.
-- [ ] Implement `pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError>`.
+- [ ] Implement `pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError>`. Include the two ADR-022 grammar regexes, the reserved-entity-kind list (`file`, `subsystem`, `guidance`), and the reserved-prefix list (`CLA-INFRA-`, `CLA-FACT-`).
 - [ ] Run tests; expect pass.
-- [ ] Commit: `feat(wp2): L5 plugin manifest parser and validator`.
+- [ ] Commit: `feat(wp2): L5 plugin manifest parser and validator (ADR-021 §Layer 1 + ADR-022 grammar)`.
 
 ### Task 2 — JSON-RPC transport (L4)
 
@@ -373,7 +459,8 @@ Steps:
   - `ContentLengthCeiling` with **8 MiB default** per ADR-021 §2b, consulted by transport.rs (refactor transport.rs to take a `&ContentLengthCeiling` in Task 2's ceiling test).
   - `EntityCountCap` with **500,000 default** per ADR-021 §2c; `try_admit(delta: usize) -> Result<(), CapExceeded>` tracks cumulative `entity + edge + finding` across the run.
   - `PathEscapeBreaker` with ADR-021 §2a threshold (**>10 escapes in 60s**) — rolling counter consumed by Task 6's host when a `JailError::EscapedRoot` is observed on a plugin response.
-  - `apply_prlimit_as(max_rss_mib: u64)` using `nix::sys::resource::setrlimit` inside `CommandExt::pre_exec` (pre-exec fork path) — applies `RLIMIT_AS` per ADR-021 §2d with **2 GiB default**. Effective limit = `min(manifest.capabilities.max_rss_mb, core_default)`. `#[cfg(target_os = "linux")]`-gated (UQ-WP2-06); on non-Linux, log-once warning.
+  - `apply_prlimit_as(max_rss_mib: u64)` using `nix::sys::resource::setrlimit` inside `CommandExt::pre_exec` (pre-exec fork path) — applies `RLIMIT_AS` per ADR-021 §2d with **2 GiB default**. Effective limit = `min(manifest.capabilities.runtime.expected_max_rss_mb, core_default)`. `#[cfg(target_os = "linux")]`-gated (UQ-WP2-06); on non-Linux, log-once warning.
+  - **Deferred**: `CLA-INFRA-PLUGIN-ENTITY-OVERRUN-WARNING` (ADR-021 §Consequences/Negative) — the per-file sanity warning fired when a plugin exceeds its declared `capabilities.runtime.expected_entities_per_file`. Sprint 1's walking skeleton is one file per invocation, so the warning has no useful surface area; implementation lands in the catalog-emitting Tier B sprint alongside multi-file discovery. Documented here so the subcode and declaration field stay wired end-to-end.
 - [ ] Tests for each; commit.
 - [ ] Commit: `feat(wp2): L6 core-enforced minimums — path jail, ceilings, prlimit (ADR-021 defaults)`.
 
@@ -397,14 +484,16 @@ Steps:
 Steps:
 
 - [ ] Failing integration test: using a real subprocess (a tiny Rust binary in `tests/fixtures/` that speaks the protocol), `PluginHost::spawn(manifest, root)` completes a handshake, issues one `analyze_file` for a fixture, receives entities, and shuts down cleanly. Assert plugin exit code 0.
+- [ ] Failing test (ADR-021 §Layer 1): a plugin whose manifest declares `capabilities.runtime.reads_outside_project_root = true` is refused at `initialize`; the host emits `CLA-INFRA-MANIFEST-UNSUPPORTED-CAPABILITY` and the plugin process is terminated before any `analyze_file` is issued. v0.1 has no mechanism to allow this capability.
 - [ ] Failing test: ontology-boundary enforcement (ADR-022) — the fixture plugin emits an entity with `kind: "unknown"` not in the manifest; host drops it and emits `CLA-INFRA-PLUGIN-UNDECLARED-KIND`.
 - [ ] Failing test: identity-mismatch rejection (UQ-WP2-11) — fixture plugin emits an entity whose `id` doesn't match `entity_id(plugin_id, kind, qualified_name)`; host drops it.
 - [ ] Failing test: path-jail drop-not-kill (ADR-021 §2a) — fixture plugin emits an `analyze_file` response with a `source.file_path` that canonicalises outside `project_root`. Host drops the entity, emits `CLA-INFRA-PLUGIN-PATH-ESCAPE`, and the plugin remains alive for the next request.
 - [ ] Failing test: path-escape sub-breaker (ADR-021 §2a) — fixture plugin emits 11 escaping paths within 60s; on the 11th, the host kills the plugin and emits `CLA-INFRA-PLUGIN-DISABLED-PATH-ESCAPE`.
 - [ ] Implement `host.rs`:
   - Spawn subprocess with `std::process::Command`, stdin/stdout piped.
-  - Apply `apply_prlimit_as` (from Task 4) inside `CommandExt::pre_exec` before `exec`, using `min(manifest.capabilities.max_rss_mb, core_default = 2 GiB)`.
+  - Apply `apply_prlimit_as` (from Task 4) inside `CommandExt::pre_exec` before `exec`, using `min(manifest.capabilities.runtime.expected_max_rss_mb, core_default = 2 GiB)`.
   - Perform handshake: send `initialize`, await response; send `initialized` notification.
+  - **Before** sending `initialized`: if `manifest.capabilities.runtime.reads_outside_project_root == true`, emit `CLA-INFRA-MANIFEST-UNSUPPORTED-CAPABILITY`, send `shutdown` + `exit`, and return a host error to the caller. Do not dispatch any `analyze_file` requests. (ADR-021 §Layer 1: v0.1 has no mechanism to allow this capability.)
   - Provide `PluginHost::analyze_file(path: &Path) -> Result<Vec<Entity>>` that:
     - Runs the request-side path through the jail (jail error on request = host error returned to caller; no plugin involvement).
     - Sends request, awaits response.

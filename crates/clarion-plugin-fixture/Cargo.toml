@@ -1,0 +1,18 @@
+[package]
+name = "clarion-plugin-fixture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "clarion-plugin-fixture"
+path = "src/main.rs"
+
+[dependencies]
+clarion-core = { path = "../clarion-core", version = "0.1.0-dev" }
+serde_json.workspace = true

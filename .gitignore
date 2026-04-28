@@ -1,1 +1,22 @@
 .filigree/
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# SQLite working files (project-level .clarion/ is tracked per ADR-005)
+*.db-journal
+*.db-wal
+
+# Rust-analyzer / IDE caches
+/.idea
+/.vscode
+
+# Python (plugins/python/)
+.venv/
+__pycache__/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/

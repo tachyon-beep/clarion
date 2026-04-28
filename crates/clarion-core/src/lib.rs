@@ -1,0 +1,36 @@
+//! clarion-core — domain types, identifiers, and provider traits.
+//!
+//! # Re-export policy (ticket clarion-29acbcd042)
+//!
+//! Only facade types that external callers need are re-exported at the crate
+//! root. Implementation types (`Frame`, `TransportError`, `RequestEnvelope`, etc.)
+//! remain accessible via `clarion_core::plugin::transport::*` and siblings.
+
+pub mod entity_id;
+pub mod llm_provider;
+pub mod plugin;
+
+pub use entity_id::{EntityId, EntityIdError, entity_id};
+pub use llm_provider::{LlmProvider, NoopProvider};
+pub use plugin::{
+    // host (Task 6) — facade for callers that spawn/connect plugins
+    AcceptedEntity,
+    CapExceeded,
+    // breaker (Task 7) — callers drive crash-loop accounting
+    CrashLoopBreaker,
+    CrashLoopState,
+    // discovery (Task 5) — callers enumerate plugins
+    DiscoveredPlugin,
+    DiscoveryError,
+    FINDING_DISABLED_CRASH_LOOP,
+    HostError,
+    HostFinding,
+    // jail / limits errors — callers may want to match on these
+    JailError,
+    // manifest (Task 1) — callers parse manifests from disk
+    Manifest,
+    ManifestError,
+    PluginHost,
+    discover,
+    parse_manifest,
+};

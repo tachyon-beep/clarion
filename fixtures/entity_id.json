@@ -1,0 +1,142 @@
+[
+  {
+    "description": "simple module-level function",
+    "plugin_id": "python",
+    "kind": "function",
+    "canonical_qualified_name": "demo.hello",
+    "expected_entity_id": "python:function:demo.hello"
+  },
+  {
+    "description": "class method",
+    "plugin_id": "python",
+    "kind": "function",
+    "canonical_qualified_name": "demo.Foo.bar",
+    "expected_entity_id": "python:function:demo.Foo.bar"
+  },
+  {
+    "description": "nested function carries Python <locals> marker",
+    "plugin_id": "python",
+    "kind": "function",
+    "canonical_qualified_name": "demo.outer.<locals>.inner",
+    "expected_entity_id": "python:function:demo.outer.<locals>.inner"
+  },
+  {
+    "description": "deeply nested function chains <locals> markers",
+    "plugin_id": "python",
+    "kind": "function",
+    "canonical_qualified_name": "demo.a.<locals>.b.<locals>.c",
+    "expected_entity_id": "python:function:demo.a.<locals>.b.<locals>.c"
+  },
+  {
+    "description": "function nested in class method",
+    "plugin_id": "python",
+    "kind": "function",
+    "canonical_qualified_name": "demo.Foo.bar.<locals>.inner",
+    "expected_entity_id": "python:function:demo.Foo.bar.<locals>.inner"
+  },
+  {
+    "description": "class in function in class (single <locals> at function boundary)",
+    "plugin_id": "python",
+    "kind": "function",
+    "canonical_qualified_name": "demo.Foo.bar.<locals>.Local.meth",
+    "expected_entity_id": "python:function:demo.Foo.bar.<locals>.Local.meth"
+  },
+  {
+    "description": "nested class method chains class names with no locals separator",
+    "plugin_id": "python",
+    "kind": "function",
+    "canonical_qualified_name": "demo.Outer.Inner.method",
+    "expected_entity_id": "python:function:demo.Outer.Inner.method"
+  },
+  {
+    "description": "single-component qualified name",
+    "plugin_id": "python",
+    "kind": "function",
+    "canonical_qualified_name": "hello",
+    "expected_entity_id": "python:function:hello"
+  },
+  {
+    "description": "snake_case name with underscores",
+    "plugin_id": "python",
+    "kind": "function",
+    "canonical_qualified_name": "demo.snake_case_func",
+    "expected_entity_id": "python:function:demo.snake_case_func"
+  },
+  {
+    "description": "name with embedded digits",
+    "plugin_id": "python",
+    "kind": "function",
+    "canonical_qualified_name": "module.name_with_digits_123",
+    "expected_entity_id": "python:function:module.name_with_digits_123"
+  },
+  {
+    "description": "deeply dotted package path",
+    "plugin_id": "python",
+    "kind": "function",
+    "canonical_qualified_name": "pkg.sub.mod.deep_func",
+    "expected_entity_id": "python:function:pkg.sub.mod.deep_func"
+  },
+  {
+    "description": "module entity (future Python plugin kind)",
+    "plugin_id": "python",
+    "kind": "module",
+    "canonical_qualified_name": "pkg.submodule",
+    "expected_entity_id": "python:module:pkg.submodule"
+  },
+  {
+    "description": "core file entity: top-level file",
+    "plugin_id": "core",
+    "kind": "file",
+    "canonical_qualified_name": "demo.py",
+    "expected_entity_id": "core:file:demo.py"
+  },
+  {
+    "description": "core file entity: nested path",
+    "plugin_id": "core",
+    "kind": "file",
+    "canonical_qualified_name": "src/pkg/mod.py",
+    "expected_entity_id": "core:file:src/pkg/mod.py"
+  },
+  {
+    "description": "core file entity: deeply nested path",
+    "plugin_id": "core",
+    "kind": "file",
+    "canonical_qualified_name": "deeply/nested/path/file.py",
+    "expected_entity_id": "core:file:deeply/nested/path/file.py"
+  },
+  {
+    "description": "core file entity: __init__.py",
+    "plugin_id": "core",
+    "kind": "file",
+    "canonical_qualified_name": "pkg/__init__.py",
+    "expected_entity_id": "core:file:pkg/__init__.py"
+  },
+  {
+    "description": "core subsystem entity: content-addressed hash",
+    "plugin_id": "core",
+    "kind": "subsystem",
+    "canonical_qualified_name": "a1b2c3d4",
+    "expected_entity_id": "core:subsystem:a1b2c3d4"
+  },
+  {
+    "description": "core subsystem entity: another hash",
+    "plugin_id": "core",
+    "kind": "subsystem",
+    "canonical_qualified_name": "deadbeef",
+    "expected_entity_id": "core:subsystem:deadbeef"
+  },
+  {
+    "description": "hypothetical go plugin (function entity)",
+    "plugin_id": "go",
+    "kind": "function",
+    "canonical_qualified_name": "mypackage.MyFunc",
+    "expected_entity_id": "go:function:mypackage.MyFunc"
+  },
+  {
+    "description": "hypothetical rust plugin (qualified via dots, not ::)",
+    "plugin_id": "rust",
+    "kind": "function",
+    "canonical_qualified_name": "std.collections.HashMap.new",
+    "expected_entity_id": "rust:function:std.collections.HashMap.new"
+  }
+]
