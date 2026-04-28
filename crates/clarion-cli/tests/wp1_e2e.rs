@@ -14,10 +14,19 @@ fn clarion_bin() -> Command {
 fn wp1_walking_skeleton_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
 
+    // Scrub PATH on every clarion invocation. The runner's PATH almost
+    // always contains world-writable directories (`/usr/local/bin`,
+    // `/opt/pipx_bin`, …) which trip WP2 scrub commit `7c0e396`'s
+    // refusal during plugin discovery; an empty PATH guarantees the
+    // `skipped_no_plugins` path this test asserts. Same pattern as
+    // `tests/analyze.rs::analyze_without_plugins_writes_skipped_run_row`
+    // (scrub commit `ad054bd`).
+
     // Step 1: clarion install
     clarion_bin()
         .args(["install", "--path"])
         .arg(dir.path())
+        .env("PATH", "")
         .assert()
         .success();
 
@@ -31,6 +40,7 @@ fn wp1_walking_skeleton_end_to_end() {
     clarion_bin()
         .args(["analyze"])
         .arg(dir.path())
+        .env("PATH", "")
         .assert()
         .success();
 

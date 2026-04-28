@@ -121,12 +121,13 @@ fn wp2_e2e_smoke_fixture_plugin_round_trip() {
     )
     .expect("write demo.mt");
 
-    // 6. Build a synthetic PATH: plugin_dir prepended to the current PATH.
-    let current_path = env::var_os("PATH").unwrap_or_default();
-    let new_path = env::join_paths(
-        std::iter::once(plugin_dir.path().to_path_buf()).chain(env::split_paths(&current_path)),
-    )
-    .expect("join_paths");
+    // 6. Build a synthetic PATH from the plugin dir alone. We do NOT inherit
+    // the runner's PATH — CI runners (and many dev workstations) have
+    // world-writable directories like `/usr/local/bin` and `/opt/pipx_bin`
+    // that trip WP2's discovery refusal (scrub commit `7c0e396`). The test
+    // doesn't need anything from the inherited PATH.
+    let new_path =
+        env::join_paths(std::iter::once(plugin_dir.path().to_path_buf())).expect("join_paths");
 
     // 7. Run `clarion analyze` with the synthetic PATH.
     clarion_bin()
@@ -274,16 +275,13 @@ ontology_version = "0.1.0"
     .expect("write demo.mt");
     fs::write(project_dir.path().join("demo.bk"), b"// broken's input\n").expect("write demo.bk");
 
-    // 5. PATH with BOTH plugin dirs.
-    let current_path = env::var_os("PATH").unwrap_or_default();
-    let new_path = env::join_paths(
-        [
-            plugin_dir_a.path().to_path_buf(),
-            plugin_dir_b.path().to_path_buf(),
-        ]
-        .into_iter()
-        .chain(env::split_paths(&current_path)),
-    )
+    // 5. PATH with BOTH plugin dirs only — no inheritance of the runner's
+    // PATH (see the rationale at the first synthetic-PATH construction
+    // above: world-writable runner dirs trip WP2's discovery refusal).
+    let new_path = env::join_paths([
+        plugin_dir_a.path().to_path_buf(),
+        plugin_dir_b.path().to_path_buf(),
+    ])
     .expect("join_paths");
 
     // 6. analyze must exit non-zero (a plugin crashed) but the run still

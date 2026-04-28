@@ -35,6 +35,13 @@ jobs:
       - name: install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
 
+      # Ensure all workspace binaries (notably clarion-plugin-fixture) are built
+      # before nextest runs. wp2_e2e tests need the fixture binary on disk and
+      # nextest's CARGO_BIN_EXE_* propagation is not reliably set for cross-package
+      # dev-dep binaries (deferred issue clarion-adeff0916d).
+      - name: build workspace bins
+        run: cargo build --workspace --bins
+
       - name: test
         run: cargo nextest run --workspace --all-features --no-tests=pass
 
