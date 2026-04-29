@@ -4,9 +4,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-This repo is **documentation-only** today — there is no Rust source, no Python plugin, no `Cargo.toml`. The v0.1 design freeze landed on 2026-04-18; first implementation commits (Sprint 1, WP1) are about to begin. Build/test/lint commands do not yet exist; do not invent them. When source code lands, update this file.
+**Sprint 1 is closed.** The walking skeleton is tagged at `v0.1-sprint-1` (merge commit `48b9bb0` on `main`). All nine Sprint-1 lock-ins (L1–L9) are ratified; `clarion analyze` end-to-end persists `python:function:demo.hello|function` against a fixture project. See `docs/implementation/sprint-1/signoffs.md` for the closed Tier-A ladder.
 
-The eventual shape (per ADR-001 + the Sprint-1 plan) is a Cargo workspace with a Rust core plus an editable Python plugin under `plugins/python/`. The Sprint-1 demo script in `docs/implementation/sprint-1/README.md` §3 is the canonical first-build recipe.
+### Layout (post-Sprint-1)
+
+- **Rust workspace** at repo root (`Cargo.toml`, `crates/`):
+  - `crates/clarion-core/` — entity-ID assembler, plugin host (`plugin/host.rs`), JSON-RPC transport, manifest parser, jail + limits, discovery, breaker.
+  - `crates/clarion-storage/` — writer-actor + reader-pool over SQLite (per ADR-011).
+  - `crates/clarion-cli/` — the `clarion` binary; `install` and `analyze` subcommands.
+  - `crates/clarion-plugin-fixture/` — test-only fixture plugin used by `wp2_e2e` integration tests.
+- **Python plugin** at `plugins/python/` (editable install: `pip install -e plugins/python[dev]`). Speaks the L4 JSON-RPC protocol; emits function entities with L7 qualnames; runs the L8 Wardline probe.
+- **Shared cross-language fixture** at `fixtures/entity_id.json` — the L2 byte-for-byte parity proof (consumed by Rust + Python tests both).
+- **End-to-end test** at `tests/e2e/sprint_1_walking_skeleton.sh` — runs the README §3 demo verbatim and asserts the sqlite output.
+- **CI** at `.github/workflows/ci.yml` — three jobs: `rust` (fmt, clippy `-D warnings`, nextest, doc, deny), `python-plugin` (ruff, ruff-format check, mypy --strict, pytest), `walking-skeleton` (depends on the first two; runs the e2e script).
+
+### Build / test commands
+
+ADR-023 names these as the floor — every PR must pass all of them.
+
+```bash
+# Rust gates
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo build --workspace --bins        # wp2_e2e tests need clarion-plugin-fixture on disk
+cargo nextest run --workspace --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+cargo deny check
+
+# Python gates (run from repo root)
+plugins/python/.venv/bin/ruff check plugins/python
+plugins/python/.venv/bin/ruff format --check plugins/python
+plugins/python/.venv/bin/mypy --strict plugins/python
+plugins/python/.venv/bin/pytest plugins/python
+
+# End-to-end
+bash tests/e2e/sprint_1_walking_skeleton.sh
+```
+
+Pre-commit hooks at `.pre-commit-config.yaml` (repo root) wire ruff + ruff-format + mypy on every `git commit`. Install with `plugins/python/.venv/bin/pre-commit install`.
+
+The Sprint-1 demo script in `docs/implementation/sprint-1/README.md` §3 is the canonical first-build recipe and is verified in CI by the `walking-skeleton` job.
 
 ## What Clarion is, in one paragraph
 
@@ -91,5 +128,13 @@ Avoid: "Loom platform," "Loom runtime," "Loom broker," "Loom store" — Loom is 
 
 `filigree` is the issue tracker for this project (config in `.filigree/`, MCP server registered in `.mcp.json`). The global `~/CLAUDE.md` file describes the workflow and CLI/MCP commands; do not duplicate that here. Project-specific notes:
 
-- Sprint 1 issues should be seeded as `WP1`, `WP2`, `WP3`, plus a `Sprint 1 close` issue blocked-by all three. Labels follow the `release:v0.1`, `sprint:1`, `wp:N`, `adr:NNN` scheme described in `docs/implementation/sprint-1/README.md` §8.
+- Sprint 1 issues (`WP1`, `WP2`, `WP3`, Sprint-1-close) are all `delivered`/`closed`. Sprint 2 issues should follow the same `release:v0.1`, `sprint:N`, `wp:N`, `adr:NNN` label scheme.
 - Filigree issue bodies should cite `REQ-*` / `NFR-*` / ADR IDs verbatim — those IDs are how design docs and tracker stay linked.
+
+### Live carryover from Sprint 1
+
+These were filed during Sprint 1 with explicit deferral rationale and are ready for Sprint 2 triage:
+
+- `clarion-889200006a` (P3, sprint:2 / wp:9) — ADR-018 amendment: L7 qualname divergence with Wardline `FingerprintEntry`. Triggers when WP9 attempts the first cross-product join.
+- WP2 deferred items: `clarion-48c5d06578` (supervisor drain/discard), `clarion-928349b60f` (jail TOCTOU on briefing read), `clarion-35688034f0` (read_frame deadline), `clarion-c0977ac293` (RLIMIT_AS observed end-to-end), `clarion-adeff0916d` (fixture-binary self-build).
+- WP1 review-2 P2 bugs: `clarion-5e03cfdd21`, `clarion-ed5017139f`, `clarion-b5b1029f5a`, `clarion-4cd11905e2` — good Sprint-2 warm-up before Tier-B feature work.
