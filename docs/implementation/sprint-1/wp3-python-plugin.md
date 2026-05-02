@@ -52,7 +52,7 @@ reached after WP4 exists and can consume richer plugin output.
 
 **Explicitly out of scope for Sprint 1:**
 
-- Classes, decorators, module entities — deferred to WP3 feature-complete.
+- Classes, decorators, module entities — deferred to WP3 feature-complete. _Sprint 2 / B.2 realises the **classes + module entities** subset; see [`../sprint-2/b2-class-module-entities.md`](../sprint-2/b2-class-module-entities.md). Decorators and the remaining kinds remain deferred to later WP3-feature-complete sprints._
 - Imports edge extraction — deferred.
 - Calls edge extraction — deferred.
 - Dynamic imports (`importlib`, `__import__`) — deferred; deliberately not solved
