@@ -4,7 +4,7 @@
 //! is run if not already recorded in `schema_migrations`. Running twice is a
 //! no-op.
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{Result, StorageError};
 
@@ -42,13 +42,18 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
 }
 
 fn read_applied_versions(conn: &Connection) -> Result<Vec<u32>> {
+    // `.optional()?` converts only `Err(QueryReturnedNoRows)` to `Ok(None)` —
+    // any other rusqlite error (DatabaseLocked, IoError, CorruptDb, ...)
+    // propagates as `StorageError::Sqlite`. A bare `.ok()` here would silently
+    // proceed to re-run 0001 on a locked or corrupt DB and surface as a
+    // confusing "table already exists" error rather than the real cause.
     let table_exists: Option<String> = conn
         .query_row(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'",
             [],
             |row| row.get(0),
         )
-        .ok();
+        .optional()?;
     if table_exists.is_none() {
         return Ok(Vec::new());
     }
@@ -92,13 +97,17 @@ fn apply_one(conn: &mut Connection, m: &Migration) -> Result<()> {
 /// Returns [`StorageError::Sqlite`] if the query fails for reasons other than
 /// the table not existing (in which case this returns `Ok(0)`).
 pub fn applied_count(conn: &Connection) -> Result<u32> {
+    // Same `.optional()?` rationale as `read_applied_versions`: only
+    // `QueryReturnedNoRows` collapses to `None` (table absent → 0 migrations
+    // applied). Any other rusqlite error propagates so callers see the real
+    // failure (e.g. database locked) rather than a misleading 0.
     let table_exists: Option<String> = conn
         .query_row(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'",
             [],
             |row| row.get(0),
         )
-        .ok();
+        .optional()?;
     if table_exists.is_none() {
         return Ok(0);
     }
