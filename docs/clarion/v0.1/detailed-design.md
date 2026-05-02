@@ -265,9 +265,9 @@ struct Edge {
 
 ```rust
 struct Finding {
-    // Identity and source
+    // Identity and provenance
     id: FindingId,
-    source: Source { tool: String, tool_version: String, run_id: String },
+    provenance: Provenance { tool: String, tool_version: String, run_id: String },
     rule_id: String,                     // namespaced: "CLA-PY-STRUCTURE-001" | "PY-WL-001-GOVERNED-DEFAULT" | "COV-001"
 
     // Claim shape — internal representation. Coerced to Filigree's
@@ -446,11 +446,14 @@ Entity {
     kind: "guidance",
     name: "JWT token module guidance",
     parent_id: null,
-    tags: ["critical"] | [],
+    tags: [],
     properties: {
         content: "<markdown>",
         content_hash: "<blake3>",
-        priority: "project" | "subsystem" | "package" | "module" | "class" | "function",
+        scope_level: "project" | "subsystem" | "package" | "module" | "class" | "function",
+        // Composition rank derived from scope_level via the schema's CASE-mapped
+        // generated column (see §3 and ADR-024). 1 = project (outermost,
+        // lowest precedence), 6 = function (innermost, highest precedence).
         scope: {
             query_types: ["summary", "wardline", "consult"],
             token_budget: 600,
@@ -464,14 +467,20 @@ Entity {
             { type: "entity", id: "python:class:..." }
         ],
         expires: Option<DateTime>,
-        critical: bool,
+        // Pinned sheets are preserved across token-budget pressure when other
+        // sheets are dropped to fit the budget. Per ADR-024 this is a
+        // budget-protection behaviour, not a UI-sort behaviour.
+        pinned: bool,
         authored_by: String,
         authored_at: DateTime,
         reviewed_at: DateTime,
-        source: "manual" | "wardline_derived" | "filigree_promotion",
-        source_ref: Option<String>,
+        // Provenance: how the sheet came to exist. See ADR-024 for the
+        // role-vs-shape rationale; finding.provenance uses the same word for
+        // the same role with a struct shape.
+        provenance: "manual" | "wardline_derived" | "filigree_promotion",
+        provenance_ref: Option<String>,
     },
-    source: null,
+    source: null,  // SourceRange — guidance entities have no code anchor
 }
 ```
 
@@ -734,9 +743,24 @@ END;
 
 -- Generated columns + indices for hot JSON properties. These avoid
 -- json_extract() in WHERE clauses for frequent filters.
-ALTER TABLE entities ADD COLUMN priority TEXT
-    GENERATED ALWAYS AS (json_extract(properties, '$.priority')) VIRTUAL;
-CREATE INDEX ix_entities_priority ON entities(priority) WHERE priority IS NOT NULL;
+-- scope_level + scope_rank pair: TEXT for equality filters; INTEGER (CASE-
+-- mapped per ADR-024) for ordered queries. The semantic ordering
+-- project→subsystem→package→module→class→function is non-lexicographic, so a
+-- TEXT-only index cannot serve ORDER BY correctly.
+ALTER TABLE entities ADD COLUMN scope_level TEXT
+    GENERATED ALWAYS AS (json_extract(properties, '$.scope_level')) VIRTUAL;
+ALTER TABLE entities ADD COLUMN scope_rank INTEGER
+    GENERATED ALWAYS AS (
+        CASE json_extract(properties, '$.scope_level')
+            WHEN 'project'   THEN 1
+            WHEN 'subsystem' THEN 2
+            WHEN 'package'   THEN 3
+            WHEN 'module'    THEN 4
+            WHEN 'class'     THEN 5
+            WHEN 'function'  THEN 6
+        END
+    ) VIRTUAL;
+CREATE INDEX ix_entities_scope_rank ON entities(scope_rank) WHERE scope_rank IS NOT NULL;
 
 ALTER TABLE entities ADD COLUMN git_churn_count INTEGER
     GENERATED ALWAYS AS (json_extract(properties, '$.git_churn_count')) VIRTUAL;
@@ -745,7 +769,7 @@ CREATE INDEX ix_entities_churn ON entities(git_churn_count) WHERE git_churn_coun
 -- View for guidance resolver
 CREATE VIEW guidance_sheets AS
 SELECT id, name,
-       json_extract(properties, '$.priority') AS priority,
+       json_extract(properties, '$.scope_level') AS scope_level,
        json_extract(properties, '$.scope.query_types') AS query_types,
        json_extract(properties, '$.scope.token_budget') AS token_budget,
        json_extract(properties, '$.match_rules') AS match_rules,
@@ -977,9 +1001,9 @@ Cache key: `(entity_id, content_hash, prompt_template_id, model_tier, guidance_f
 
 **TTL backstop**: summary cache rows older than `clarion.yaml:llm_policy.caching.max_age_days` (default: 180 days) are invalidated unconditionally on next query. This bounds the time a silently-stale briefing can influence agents; 180 days is long enough that cache hit rates stay high during active development and short enough that stale models don't persist across a full Anthropic model generation.
 
-**TTL interacts asymmetrically with stale critical guidance**, which is a sharp edge worth naming: invalidating a briefing at day 180 forces a fresh LLM call — but that fresh call still composes the *same* stale `critical: true` guidance sheet if the operator hasn't re-reviewed it. The briefing is fresh; its framing is not. v0.1 mitigations:
+**TTL interacts asymmetrically with stale pinned guidance**, which is a sharp edge worth naming: invalidating a briefing at day 180 forces a fresh LLM call — but that fresh call still composes the *same* stale `pinned: true` guidance sheet if the operator hasn't re-reviewed it. The briefing is fresh; its framing is not. v0.1 mitigations:
 
-1. **Churn-triggered cache invalidation for guidance-stale entities**: when `CLA-FACT-GUIDANCE-CHURN-STALE` fires (stale critical sheet on a high-churn entity), the summary cache rows whose `guidance_fingerprint` includes that sheet are invalidated eagerly, not at TTL. The operator now sees churn-stale findings *and* feels pressure to act because cache misses start accruing cost.
+1. **Churn-triggered cache invalidation for guidance-stale entities**: when `CLA-FACT-GUIDANCE-CHURN-STALE` fires (stale pinned sheet on a high-churn entity), the summary cache rows whose `guidance_fingerprint` includes that sheet are invalidated eagerly, not at TTL. The operator now sees churn-stale findings *and* feels pressure to act because cache misses start accruing cost.
 2. **Stale-guidance flag on briefings**: briefings whose composed guidance includes a sheet with a `CLA-FACT-GUIDANCE-CHURN-STALE` or `CLA-FACT-GUIDANCE-EXPIRED` finding against it carry `briefing_guidance_may_be_stale: true` in the response envelope. Agents consuming the briefing can downweight its `risks` / `patterns` claims accordingly.
 
 ---
@@ -1684,7 +1708,7 @@ The v0.1 core is Rust (locked — see §11 ADR-001). Crate choices below are rec
 
 - `UNIQUE(kind, from_id, to_id)` on `edges` — prevents duplicate edges from plugin retry or ambiguous AST matches.
 - FTS5 triggers wiring `entities` → `entity_fts` — required for mutations to stay searchable; see §3 schema block.
-- Generated columns + indices on `priority` and `git_churn_count` — hot-path filters avoid `json_extract()` in WHERE clauses.
+- Generated columns + indices on `scope_level`/`scope_rank` and `git_churn_count` — hot-path filters avoid `json_extract()` in WHERE clauses. The `scope_rank` integer column carries a CASE-mapped rank (1..6) so `ORDER BY scope_rank` produces the documented composition order; `scope_level` keeps the human-readable enum value for equality filtering. See ADR-024.
 - `PRAGMA foreign_keys = ON` every connection (rusqlite does not enable by default).
 
 ---
@@ -1717,7 +1741,7 @@ Revision 5 (2026-04-17) restructures the single design document into a three-lay
 | Leverage 3: `knowledge_basis` has no promotion path | Added promotion rule: guidance authorship matching an entity, or acknowledged/suppressed finding with reason, promotes briefing to `HumanVerified` | §2 EntityBriefing |
 | Leverage 4: Commit SHAs on runs but not on entities | Added `first_seen_commit` / `last_seen_commit` to Entity struct and schema; indexed; dirty-tree runs use underlying SHA | §2, §3 |
 | Small: SARIF translator framing | Reframed as a permanent general-purpose feature (Semgrep, CodeQL, etc.); only Wardline-specific ownership moves in v0.2 | §7 |
-| Small: TTL + critical-sheet interaction | Churn-triggered eager invalidation for guidance-stale entities; `briefing_guidance_may_be_stale` flag on responses | §4 |
+| Small: TTL + pinned-sheet interaction | Churn-triggered eager invalidation for guidance-stale entities; `briefing_guidance_may_be_stale` flag on responses | §4 |
 | Small: Operator API-key risk | §8 Operator guidance subsection; threat-model row for personal-key commits | §8 |
 
 ### Rev 3 changes (from integration recon, 2026-04-17)

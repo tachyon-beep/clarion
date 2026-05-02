@@ -248,7 +248,7 @@ Institutional knowledge attached to entities and composed into prompts.
 
 #### REQ-GUIDANCE-01 — Guidance sheets as first-class entities
 
-Guidance sheets are entities of `kind: guidance` with properties `{content, priority, scope, match_rules, expires, critical, source, ...}`. They participate in the same navigation, finding, and cache machinery as code entities.
+Guidance sheets are entities of `kind: guidance` with properties `{content, scope_level, scope, match_rules, expires, pinned, provenance, ...}` (per ADR-024). They participate in the same navigation, finding, and cache machinery as code entities.
 
 **Rationale**: First-class entity status lets guidance share the identity, search, finding-emission, and MCP-tool infrastructure without parallel mechanisms. A guidance sheet can be inspected, linked to, and affected by findings in the same ways code entities are.
 **Verification**: `clarion guidance create` produces an entity of `kind: guidance` with populated properties; `show_guidance(id)` returns it; findings can be emitted against it.
@@ -256,10 +256,10 @@ Guidance sheets are entities of `kind: guidance` with properties `{content, prio
 
 #### REQ-GUIDANCE-02 — Composition algorithm
 
-Given `(entity_id, query_type, model_tier)`, Clarion collects candidate sheets via match-rule resolution (path, kind, tag, subsystem, wardline-group, explicit), filters by scope and expiry, sorts by composition priority (project → subsystem → package → module → class → function), applies a token budget (preserving `critical: true` sheets), and returns `(segments, sheets_used, sheets_dropped, fingerprint)`.
+Given `(entity_id, query_type, model_tier)`, Clarion collects candidate sheets via match-rule resolution (path, kind, tag, subsystem, wardline-group, explicit), filters by scope and expiry, sorts by `scope_rank` ASC (project → subsystem → package → module → class → function), applies a token budget (preserving `pinned: true` sheets), and returns `(segments, sheets_used, sheets_dropped, fingerprint)`.
 
-**Rationale**: Composition order matters — inner sheets override outer with controlled precedence — and the token budget must preserve the highest-priority guidance. The fingerprint determines cache invalidation and must be deterministic given the same (entity, query, tier) inputs.
-**Verification**: Fixture with layered guidance (project + module + class) composes in the correct order; `critical` sheets survive budget pressure that drops non-critical ones; fingerprints are stable.
+**Rationale**: Composition order matters — inner sheets override outer with controlled precedence — and the token budget must preserve `pinned` guidance. The fingerprint determines cache invalidation and must be deterministic given the same (entity, query, tier) inputs.
+**Verification**: Fixture with layered guidance (project + module + class) composes in the correct order; `pinned` sheets survive budget pressure that drops non-pinned ones; fingerprints are stable.
 **See**: System Design §7 (Guidance System, Composition).
 
 #### REQ-GUIDANCE-03 — Authoring workflows (CLI + MCP)
@@ -272,7 +272,7 @@ Operators author guidance via CLI (`clarion guidance create/edit/list/show/delet
 
 #### REQ-GUIDANCE-04 — Wardline-derived guidance
 
-On every `clarion analyze` run with `wardline.yaml` present, Clarion auto-generates `source: wardline_derived` guidance sheets for declared tier assignments, boundary contracts, and annotation groups in use. Auto-generated sheets carry `critical: true`. User edits are preserved (`source: wardline_derived_overridden`) across regenerations.
+On every `clarion analyze` run with `wardline.yaml` present, Clarion auto-generates `provenance: wardline_derived` guidance sheets for declared tier assignments, boundary contracts, and annotation groups in use. Auto-generated sheets carry `pinned: true`. User edits are preserved (`provenance: wardline_derived_overridden`) across regenerations.
 
 **Rationale**: Wardline declarations (tiers, contracts) are project-wide institutional knowledge Clarion already reads at analysis time. Regenerating the corresponding guidance sheets eliminates the manual labour of keeping them in sync with `wardline.yaml`; preserving user edits respects operator curation.
 **Verification**: Fixture with `wardline.yaml` produces auto-derived sheets on first run; edit a sheet; re-run; assert the edit is preserved and flagged `wardline_derived_overridden`.
@@ -280,10 +280,10 @@ On every `clarion analyze` run with `wardline.yaml` present, Clarion auto-genera
 
 #### REQ-GUIDANCE-05 — Staleness signals tied to code churn
 
-For each guidance sheet, Clarion computes the aggregate `git_churn_count` delta over matched entities since the sheet's `authored_at` (or `reviewed_at`, whichever is later). Exceeding a threshold (default 50 commits; 20 for `critical: true` sheets) emits `CLA-FACT-GUIDANCE-CHURN-STALE` with `confidence: 0.7, confidence_basis: heuristic`.
+For each guidance sheet, Clarion computes the aggregate `git_churn_count` delta over matched entities since the sheet's `authored_at` (or `reviewed_at`, whichever is later). Exceeding a threshold (default 50 commits; 20 for `pinned: true` sheets) emits `CLA-FACT-GUIDANCE-CHURN-STALE` with `confidence: 0.7, confidence_basis: heuristic`.
 
-**Rationale**: Guidance is an accumulating stock with no intrinsic quality signal — especially `critical: true` sheets, which shape LLM output most. Tying staleness to churn gives operators a review signal without auto-expiring sheets (which risks dropping still-valid guidance).
-**Verification**: Fixture with high churn on matched entities produces the finding; lower threshold for critical sheets fires earlier.
+**Rationale**: Guidance is an accumulating stock with no intrinsic quality signal — especially `pinned: true` sheets, which shape LLM output most. Tying staleness to churn gives operators a review signal without auto-expiring sheets (which risks dropping still-valid guidance).
+**Verification**: Fixture with high churn on matched entities produces the finding; lower threshold for pinned sheets fires earlier.
 **See**: System Design §7 (Guidance System, Staleness).
 
 #### REQ-GUIDANCE-06 — Export / import

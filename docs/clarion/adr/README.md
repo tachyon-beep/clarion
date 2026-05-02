@@ -24,6 +24,7 @@ This folder is the canonical home for authored Clarion architecture decision rec
 | [ADR-021](./ADR-021-plugin-authority-hybrid.md) | Plugin authority model: hybrid (declared capabilities + core-enforced minimums) | Accepted |
 | [ADR-022](./ADR-022-core-plugin-ontology.md) | Core/plugin ontology ownership boundary | Accepted |
 | [ADR-023](./ADR-023-tooling-baseline.md) | Rust + Python tooling baseline (edition 2024, pedantic, cargo-deny, nextest, CI; ruff + mypy-strict + pre-commit) | Accepted |
+| [ADR-024](./ADR-024-guidance-schema-vocabulary.md) | Guidance schema vocabulary rename (priority→scope_level/scope_rank; critical→pinned; source→provenance) and in-place migration policy | Accepted |
 
 ## Backlog still tracked in the detailed design
 
@@ -40,3 +41,13 @@ The following decisions are still backlog items rather than authored ADR files. 
 ## Pre-implementation scope commitments
 
 The priorities and scope implied by these ADRs are committed in [../v0.1/plans/v0.1-scope-commitments.md](../v0.1/plans/v0.1-scope-commitments.md). The ADR authoring sprint is staged against that memo.
+
+## ADR acceptance criteria — Loom vocabulary discipline
+
+ADRs introducing cross-product-visible field names must update [`docs/suite/glossary.md`](../../suite/glossary.md) before moving from Proposed to Accepted, with one of three explicit verdicts:
+
+- **`no clash`** — the term is unique to this product, no sibling currently uses it
+- **`managed clash`** — a sibling uses the same term; an explicit mapping table exists in the ADR (model: [ADR-017](./ADR-017-severity-and-dedup.md))
+- **`renamed`** — the proposed term clashed with a sibling; this ADR renames the local term to avoid the clash
+
+The verdict is part of acceptance evidence, not a courtesy. Three of v0.1's clashes (`severity`, `rule_id`, `finding` wire shape) shipped clean because they got managing ADRs at design time; three did not (`priority`, `critical`, `source`) and required retrofit via ADR-024. The rule converts the next clash from "discovered during implementation" to "blocked at design review." See `glossary.md` for federation-safety constraints — the glossary is a human-consulted design-review artifact, not infrastructure.

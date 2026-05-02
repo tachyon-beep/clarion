@@ -343,7 +343,7 @@ Detail levels: `short` (~60 tokens), `medium` (~300), `full` (~900), `exhaustive
 
 ### Guidance sheets
 
-Guidance is an entity of `kind: guidance` with properties including `content` (markdown), `priority` (project | subsystem | package | module | class | function), `scope` (which query types this sheet applies to), `match_rules` (path / tag / kind / wardline_group / subsystem / entity), `expires`, `critical` (boolean — preserved across token-budget pressure), `source` (manual / wardline_derived / filigree_promotion).
+Guidance is an entity of `kind: guidance` with properties including `content` (markdown), `scope_level` (`project | subsystem | package | module | class | function` — applicability scope, ordered outer-to-inner; per ADR-024 the schema also exposes a `scope_rank` integer column for ordered queries), `scope` (which query types this sheet applies to), `match_rules` (path / tag / kind / wardline_group / subsystem / entity), `expires`, `pinned` (boolean — preserved across token-budget pressure), `provenance` (manual / wardline_derived / filigree_promotion).
 
 Explicit entity targets get `guides` edges; pattern-based matches resolve at query time (§7 Composition).
 
@@ -672,8 +672,8 @@ flowchart TB
     Resolve["1. Resolve entity context<br/>path, kind, tags,<br/>subsystem, ancestor chain,<br/>wardline groups"]
     Collect["2. Collect candidate sheets<br/>via unioned queries:<br/>explicit match / path / kind /<br/>tag / subsystem / wardline-group /<br/>ancestor / implicit global"]
     Filter["3. Filter<br/>drop sheets whose scope excludes<br/>this query_type; drop expired;<br/>deduplicate"]
-    Sort["4. Sort by composition priority<br/>project → subsystem → package →<br/>module → class → function<br/>(ties broken by authored_at)"]
-    Budget["5. Apply token budget<br/>greedy fill inner → outer;<br/>preserve critical:true;<br/>log dropped"]
+    Sort["4. Sort by scope_rank ASC<br/>project → subsystem → package →<br/>module → class → function<br/>(ties broken by authored_at)"]
+    Budget["5. Apply token budget<br/>greedy fill inner → outer;<br/>preserve pinned:true;<br/>log dropped"]
     Render["6. Render into prompt segments<br/>per caching strategy (§5)"]
     Fingerprint["7. Compute guidance fingerprint<br/>blake3(sorted([(sheet.id,<br/>sheet.content_hash)]))"]
     Return(["Return: segments,<br/>sheets_used, sheets_dropped,<br/>fingerprint"])
@@ -685,7 +685,7 @@ flowchart TB
 
 | Surface | Workflow |
 |---|---|
-| CLI | `clarion guidance create --match path=src/auth/** --priority subsystem` |
+| CLI | `clarion guidance create --match path=src/auth/** --scope-level subsystem` |
 | CLI | `clarion guidance edit <id>` / `show` / `delete` |
 | CLI | `clarion guidance list [--for-entity <id>]` / `--stale` / `--expired` |
 | MCP | `propose_guidance(entity_id, content, match_rules)` — produces a Filigree **observation**, not a sheet |
@@ -699,23 +699,23 @@ The `propose_guidance` → observation → explicit promote flow is the v0.1 def
 
 On every `clarion analyze` run with `wardline.yaml` present:
 
-- **Per declared tier assignment** → module-priority sheet: "This module contains declared Tier-N entities (list). Summaries should reflect Tier-N posture."
-- **Per boundary contract** → subsystem-priority sheet: "Data crossing boundary `<contract>` carries Tier N; downstream users must not …"
-- **Per annotation group in use** → project-priority sheet referencing wardline's §7 paragraph for that group.
+- **Per declared tier assignment** → module-scope sheet: "This module contains declared Tier-N entities (list). Summaries should reflect Tier-N posture."
+- **Per boundary contract** → subsystem-scope sheet: "Data crossing boundary `<contract>` carries Tier N; downstream users must not …"
+- **Per annotation group in use** → project-scope sheet referencing wardline's §7 paragraph for that group.
 
-All auto-generated sheets tagged `source: wardline_derived`, `critical: true`. Regenerated every analyse; user-edited overrides preserved by ID and marked `source: wardline_derived_overridden`.
+All auto-generated sheets tagged `provenance: wardline_derived`, `pinned: true`. Regenerated every analyse; user-edited overrides preserved by ID and marked `provenance: wardline_derived_overridden`.
 
 Drift between `wardline.yaml` and derived guidance (Wardline runs at commit cadence; Clarion at batch cadence) surfaces as `CLA-FACT-GUIDANCE-STALE` finding.
 
 ### Staleness signals tied to code churn
 
-Guidance is an accumulating stock with no intrinsic quality signal — especially `critical: true` sheets (last dropped from token budget pressure) can stay in use long after their assumptions drift.
+Guidance is an accumulating stock with no intrinsic quality signal — especially `pinned: true` sheets (last dropped from token budget pressure) can stay in use long after their assumptions drift.
 
 On every analyze, for each guidance sheet:
 
 - Compute aggregate `git_churn_count` delta over matched entities since `authored_at` or `reviewed_at`.
-- Threshold exceeded (default 50 commits; 20 for `critical: true` sheets) → emit `CLA-FACT-GUIDANCE-CHURN-STALE` with `confidence: 0.7, confidence_basis: heuristic`.
-- Asymmetric threshold is deliberate: critical sheets shape LLM output most, so their staleness matters most.
+- Threshold exceeded (default 50 commits; 20 for `pinned: true` sheets) → emit `CLA-FACT-GUIDANCE-CHURN-STALE` with `confidence: 0.7, confidence_basis: heuristic`.
+- Asymmetric threshold is deliberate: pinned sheets shape LLM output most, so their staleness matters most.
 
 Auto-expiry is NOT the design — the stale signal pushes operators toward review; the decision stays with humans.
 
@@ -735,7 +735,7 @@ This is a rendering change on an existing data path (the consult tool already fe
 - **Expiry**: expired sheets excluded from composition but kept in store (`clarion guidance list --expired`); `CLA-FACT-GUIDANCE-EXPIRED` per run.
 - **Review cadence**: optional `reviewed_at`; `clarion guidance list --stale` for sheets not touched in N days.
 - **Change tracking**: edit → new `content_hash` + updated `updated_at` → dependent summary cache entries invalidate at next query.
-- **Conflict**: sheets are additive; inner sheets override outer by priority ordering; all sheets presented to the LLM in priority order with level labels so intended overrides are visible.
+- **Conflict**: sheets are additive; inner sheets override outer by scope-rank ordering; all sheets presented to the LLM in scope-rank order with level labels so intended overrides are visible.
 
 ---
 
