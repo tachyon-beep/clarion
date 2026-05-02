@@ -387,3 +387,49 @@ While doing this audit I noticed but did not investigate:
    one of the §11 backlog ADRs may fit (worth a quick check).
 
 Once those three are answered, the ADR draft + PR scope is determined.
+
+## Reviewer additions (architecture-critic + leverage-analyst, 2026-05-03)
+
+Both reviewers confirmed F-1 through F-8. The architecture critic added
+five schema-design findings the original audit missed; they are listed
+here so the durable record carries the full set. Leverage analyst's
+prescription (Level 5 + Level 6 — ADR-acceptance rule + glossary)
+shaped Phase 1; both reviewers' verdicts (Option α with reframed
+naming and split doctrine vs. schema fix) shaped Phase 2.
+
+| ID | Finding | Severity | Filigree |
+|----|---------|----------|----------|
+| F-13 | Enum-typed `TEXT` columns lack `CHECK` constraints (`entities.kind`, `edges.kind`, `findings.{kind,severity,status}`, `runs.status`); validation lives in the writer-actor by design but the policy is undocumented | MEDIUM-HIGH | `clarion-fbe50aa6e1` (P2, separate ADR likely warranted) |
+| F-14 | `entity_tags(entity_id, tag)` PK has no `plugin_id` column; two plugins emitting the same tag string collide | LOW (v0.1 Python-only) / breaks at WP9 | `clarion-ef9bd365bf` (P3) |
+| F-15 | `edges UNIQUE(kind, from_id, to_id)` ignores `properties`; two same-kind edges between the same pair with different properties cannot coexist; intentional but undocumented (and inconsistent with how findings dedup) | LOW | `clarion-fb1b8fb5a0` (P3, doc note) |
+| F-16 | `source_file_id TEXT REFERENCES entities(id)` has implicit "rows referenced by `source_file_id` must have `kind='file'`" invariant; nothing enforces it | MEDIUM | `clarion-523b2eebad` (P2) |
+| F-17 | `runs.id` ↔ `findings.run_id` is string-match only, no FK; provenance link untracked at the schema layer | LOW | `clarion-ba198ee96b` (P4, doc note) |
+
+F-1 through F-8 are absorbed by ADR-024 (`docs/clarion/adr/ADR-024-guidance-schema-vocabulary.md`) and the Phase 1 + Phase 2 commits on this branch. The original priority-affinity bug `clarion-4cd11905e2` is closed with the audit-resolution comment.
+
+### Naming refinements applied to Phase 2
+
+The original audit proposed `composition_level`/`composition_rank`,
+`pinned`, and `provenance`/`origin` (split). The architecture critic
+pushed back on three of these:
+
+- `composition_level` → **`scope_level`** (matches existing
+  `properties.scope.{query_types, token_budget}` already on the same
+  struct; semantically more accurate — this is *applicability scope*,
+  not "composition" in any compositional sense).
+- `pinned` accepted with explicit gloss (rejected `non_droppable` as a
+  double negative; `keep_under_pressure` was acceptable but uglier).
+- `provenance`/`origin` split → **`provenance` for both** (same role,
+  different shape; field name describes role not shape; SARIF and SBOM
+  precedent).
+
+ADR-024 lands with the refined names.
+
+### Migration policy decision applied to Phase 2
+
+Both reviewers (critic explicitly, leverage analyst implicitly) called
+the migration-policy punt the audit's biggest weakness. ADR-024 makes
+the call: **edit `0001` in place**, with a written retirement trigger
+(first external operator pulls a published Clarion build → policy
+switches to stack-only thereafter). No supersession of ADR-024 needed
+for the trigger; the trigger is observable and named in the ADR.
