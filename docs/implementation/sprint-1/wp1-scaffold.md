@@ -23,10 +23,13 @@ to later sprints where those surfaces are first exercised.
   [detailed-design.md §3](../../clarion/v0.1/detailed-design.md#3-storage-implementation):
   tables `entities`, `entity_tags`, `edges`, `findings`, `summary_cache`,
   `runs`, plus the `entity_fts` FTS5 virtual table and its three
-  insert/update/delete triggers, the two generated-column `ALTER TABLE`
+  insert/update/delete triggers, the generated-column `ALTER TABLE`
   statements plus partial indexes (`ix_entities_priority`,
-  `ix_entities_churn`), the `guidance_sheets` view, and a
-  `schema_migrations` meta table. The walking skeleton only writes rows into
+  `ix_entities_churn` — note: `ix_entities_priority` was renamed to
+  `ix_entities_scope_rank` and the underlying column was split into
+  `scope_level` + `scope_rank` by [ADR-024](../../clarion/adr/ADR-024-guidance-schema-vocabulary.md);
+  the L1 lock at sprint close described the pre-rename shape),
+  the `guidance_sheets` view, and a `schema_migrations` meta table. The walking skeleton only writes rows into
   `entities` and `runs`, but every other table, virtual table, trigger,
   generated column, and view is created by migration `0001` so its shape is
   frozen. The full schema is locked here (L1) precisely because doing so
@@ -358,7 +361,7 @@ Steps:
   - Tables: `entities`, `entity_tags`, `edges`, `findings`, `summary_cache`, `runs`, and `schema_migrations` (meta). Every column, primary key, foreign key, and explicit index as written in §3.
   - Virtual table: `entity_fts` (FTS5, `tokenize = 'porter unicode61'`).
   - Triggers: `entities_ai`, `entities_au`, `entities_ad` keeping `entity_fts` synchronised with `entities`.
-  - Generated columns + indexes: `entities.priority` + `ix_entities_priority`, `entities.git_churn_count` + `ix_entities_churn` (both partial indexes on `IS NOT NULL`).
+  - Generated columns + indexes: `entities.priority` + `ix_entities_priority`, `entities.git_churn_count` + `ix_entities_churn` (both partial indexes on `IS NOT NULL`). _Post-Sprint-1 note: ADR-024 renamed these to `entities.scope_level` + `entities.scope_rank` + `ix_entities_scope_rank`; the WP1 task as completed shipped the pre-rename shape, which the rename then superseded._
   - View: `guidance_sheets` over `entities WHERE kind = 'guidance'`.
   - `PRAGMA foreign_keys = ON` applied at connection open (not in the migration file itself — PRAGMA is connection-scoped and is set in `reader.rs` / `writer.rs` on each open per ADR-011's connection open list).
   - Do not truncate; every table, trigger, generated column, and view ships in Sprint 1 even though only `entities` and `runs` are written.
@@ -366,7 +369,7 @@ Steps:
   - Every expected table exists via `SELECT name FROM sqlite_master WHERE type='table'`.
   - The FTS5 virtual table `entity_fts` exists and is queryable (`SELECT * FROM entity_fts LIMIT 0`).
   - All three FTS triggers exist via `SELECT name FROM sqlite_master WHERE type='trigger'`.
-  - The generated columns round-trip: insert an entity with a `properties` JSON containing `priority`, `SELECT priority FROM entities` returns the extracted value.
+  - The generated columns round-trip: insert an entity with a `properties` JSON containing `priority`, `SELECT priority FROM entities` returns the extracted value. _Post-Sprint-1 note: per ADR-024 the test now uses `scope_level`/`scope_rank` instead of `priority`._
   - The `guidance_sheets` view exists and is queryable.
   - Idempotency: running migrations twice does not fail.
 - [ ] Run `cargo test -p clarion-storage schema_apply`; expect failures referencing missing `apply_migrations()`.

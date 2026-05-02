@@ -103,6 +103,14 @@ If the answer to any question is no, the candidate is a feature, a protocol, or 
 
 Member products are named from weaving mechanics — Clarion, Filigree, Wardline, Shuttle — as distinct proper names rather than subdivisions. There is no "Loom Guard," "Loom Workflow," or "Loom Execute"; each product earns its own identity. The family name sits above the products without dominating them, and — per §3 and §6 — it does not name any component that gets installed or runs.
 
+### Cross-product field names
+
+Federation does not require uniform vocabulary, but it does require that the same word never silently means two things across siblings. The discipline:
+
+- A single word should mean the same thing across products, OR be confined to one product, OR have an explicit mapping documented in an Accepted ADR.
+- The suite-level catalogue of cross-product-visible terms lives in [`glossary.md`](./glossary.md). It is a read-only design-review artefact (per §5: nothing imports it, nothing runs from it, removing it changes no semantics) and is federation-safe by construction.
+- Each product enforces the rule locally in its own ADR-acceptance process (Clarion's lives in [`docs/clarion/adr/README.md`](../clarion/adr/README.md)). Other products are expected to mirror the rule in their own ADR processes, citing this section as the suite-level authority. CI lint or cross-repo enforcement is explicitly out of bounds — that would convert a federation-safe doc into shared infrastructure.
+
 ## 9. Status
 
 | Product | Status |
