@@ -40,6 +40,7 @@ A vocabulary verdict is part of ADR-acceptance evidence, not a courtesy. Three o
 | Status | Meaning |
 |---|---|
 | `managed` | Same term used by ≥2 products; an Accepted ADR provides explicit mapping or namespacing |
+| `renamed` | Was a clash; an Accepted ADR renamed the local term to avoid the collision; the cross-product collision is gone |
 | `open` | Same term used by ≥2 products; **no managing ADR yet** — clash is live |
 | `no clash (informational)` | Term is unique to one product but listed here to head off cross-product reader confusion |
 | `deferred` | Clash exists; retirement condition documented; tracked elsewhere |
@@ -55,13 +56,15 @@ A vocabulary verdict is part of ADR-acceptance evidence, not a courtesy. Three o
 | `rule_id` | Clarion + Wardline → Filigree | Namespaced prefix per emitter: `CLA-PY-*`, `CLA-INFRA-*`, `CLA-FACT-*`, `CLA-SEC-*`, `WLN-*`. Filigree stores byte-for-byte; round-trip preserved. | [ADR-017](../clarion/adr/ADR-017-severity-and-dedup.md), [ADR-022](../clarion/adr/ADR-022-core-plugin-ontology.md) — namespacing convention + grammar enforcement at the Clarion-plugin boundary |
 | `finding` (wire shape) | Clarion + Wardline → Filigree | Cross-product unified record type. Field ownership documented; extension via `metadata` slot (top-level keys outside the enumerated set are silently dropped). | [ADR-004](../clarion/adr/ADR-004-finding-exchange-format.md) — full wire schema with explicit ownership |
 
-### Open clashes (resolved by ADR-024 — see [skeleton-audit](../superpowers/handoffs/2026-05-03-skeleton-audit.md))
+### Renamed clashes (resolved by ADR-024 — see [skeleton-audit](../superpowers/handoffs/2026-05-03-skeleton-audit.md))
 
-| Term | Products | Clash | Authority |
+These entries record the resolution per the `renamed` verdict (see ADR-acceptance rule above). Each row names the pre-rename collision and the post-rename Clarion field name; Filigree's vocabulary is unchanged.
+
+| Term (post-rename) | Products | Resolution | Authority |
 |---|---|---|---|
-| `priority` | Clarion ↔ Filigree | Clarion: guidance scope-of-applicability, six-level string enum (`project\|subsystem\|package\|module\|class\|function`). Filigree: issue urgency, numeric `P0..P4`. Same word, unrelated meanings. | **Open** — to be resolved by ADR-024 (rename Clarion's field to `scope_level`/`scope_rank`) |
-| `critical` | Clarion ↔ Filigree | Clarion: guidance flag meaning "do not drop under token-budget pressure". Filigree: P0 priority + `severity:critical` tier (highest urgency). Related-but-distinct semantics. | **Open** — to be resolved by ADR-024 (rename Clarion's field to `pinned`) |
-| `source` | Within-Clarion + Clarion ↔ Filigree | Clarion overloads the word three ways: `entity.source` = `SourceRange { file_id, byte_start, ... }`; `finding.source` = `{ tool, tool_version, run_id }`; `guidance.source` = `"manual"\|"wardline_derived"\|"filigree_promotion"`. Filigree: `source:` label = `scanner\|review\|agent` (how an issue was discovered). | **Open** — to be resolved by ADR-024 (rename `finding.source` and `guidance.source` to `provenance`; keep `entity.source` since the type `SourceRange` disambiguates) |
+| `scope_level` (Clarion) ← was `priority` | Clarion ↔ Filigree | Clarion's guidance scope-of-applicability field is now `scope_level` (six-level string enum, semantics unchanged) plus a companion `scope_rank` integer (CASE-mapped 1..6) for `ORDER BY` queries. Filigree's `priority` (P0..P4) keeps its name. The shared word is gone. | [ADR-024](../clarion/adr/ADR-024-guidance-schema-vocabulary.md) |
+| `pinned` (Clarion) ← was `critical` | Clarion ↔ Filigree | Clarion's guidance budget-protection flag is now `pinned: bool` (semantics: preserved across token-budget pressure, unchanged). Filigree's `severity:critical` tier and informal "Critical" P0 label keep their meanings. | [ADR-024](../clarion/adr/ADR-024-guidance-schema-vocabulary.md) |
+| `provenance` (Clarion) ← was `source` (on `finding` and `guidance` only) | Within-Clarion + Clarion ↔ Filigree | Clarion's `finding.source` struct (`{tool, tool_version, run_id}`) is now `finding.provenance`; the `entity.properties.source` enum on guidance entities (`"manual"\|"wardline_derived"\|"filigree_promotion"`) is now `entity.properties.provenance`. `entity.source` (`SourceRange` on code entities) is unchanged — the type name disambiguates. Filigree's `source:` taxonomy label keeps its meaning. | [ADR-024](../clarion/adr/ADR-024-guidance-schema-vocabulary.md) |
 
 ### No-clash informational entries
 
@@ -102,3 +105,4 @@ Shuttle is not in flight. When Shuttle's design begins, the first design-review 
 ## History
 
 - **2026-05-03** — Glossary created during the v0.1 skeleton audit (Sprint 2 kickoff). Seeded with the three managed ADR-mediated clashes, the three open clashes resolved by ADR-024, the no-clash informational entries, and the deferred ADR-018 amendment trigger.
+- **2026-05-03** — ADR-024 Accepted; the `priority`/`critical`/`source` rows moved from `open` to `renamed` (see "Renamed clashes" section). Schema migration `0001_initial_schema.sql` edited in place per the policy named in ADR-024.

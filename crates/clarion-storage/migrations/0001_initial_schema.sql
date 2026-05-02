@@ -6,6 +6,13 @@
 -- table, FTS5 virtual table, trigger, generated column, and view is created
 -- here so the full shape is frozen at L1-lock time. See ADR-011 for the
 -- writer-actor + per-N-files transaction model this schema supports.
+--
+-- Edit-in-place policy (per ADR-024): this migration is editable in place
+-- as long as no external operator has produced a `.clarion/clarion.db` from
+-- a published Clarion build. The retirement trigger names exactly that
+-- condition; once it fires, all schema changes stack as 0002_*.sql etc.
+-- The 2026-05-03 edits (guidance vocabulary rename per ADR-024) were
+-- applied under this policy.
 -- ============================================================================
 
 BEGIN;
@@ -160,9 +167,24 @@ CREATE TRIGGER entities_ad AFTER DELETE ON entities BEGIN
 END;
 
 -- Generated columns + partial indexes for hot JSON properties.
-ALTER TABLE entities ADD COLUMN priority TEXT
-    GENERATED ALWAYS AS (json_extract(properties, '$.priority')) VIRTUAL;
-CREATE INDEX ix_entities_priority ON entities(priority) WHERE priority IS NOT NULL;
+-- scope_level / scope_rank pair (per ADR-024): TEXT for equality filters,
+-- INTEGER (CASE-mapped) for ordered queries. The semantic ordering
+-- project→subsystem→package→module→class→function is non-lexicographic, so
+-- a TEXT-only index cannot serve ORDER BY correctly.
+ALTER TABLE entities ADD COLUMN scope_level TEXT
+    GENERATED ALWAYS AS (json_extract(properties, '$.scope_level')) VIRTUAL;
+ALTER TABLE entities ADD COLUMN scope_rank INTEGER
+    GENERATED ALWAYS AS (
+        CASE json_extract(properties, '$.scope_level')
+            WHEN 'project'   THEN 1
+            WHEN 'subsystem' THEN 2
+            WHEN 'package'   THEN 3
+            WHEN 'module'    THEN 4
+            WHEN 'class'     THEN 5
+            WHEN 'function'  THEN 6
+        END
+    ) VIRTUAL;
+CREATE INDEX ix_entities_scope_rank ON entities(scope_rank) WHERE scope_rank IS NOT NULL;
 
 ALTER TABLE entities ADD COLUMN git_churn_count INTEGER
     GENERATED ALWAYS AS (json_extract(properties, '$.git_churn_count')) VIRTUAL;
@@ -176,12 +198,15 @@ CREATE VIEW guidance_sheets AS
 SELECT
     e.id,
     e.name,
-    json_extract(e.properties, '$.priority')             AS priority,
+    json_extract(e.properties, '$.scope_level')          AS scope_level,
+    e.scope_rank                                         AS scope_rank,
     json_extract(e.properties, '$.scope.query_types')    AS query_types,
     json_extract(e.properties, '$.scope.token_budget')   AS token_budget,
     json_extract(e.properties, '$.match_rules')          AS match_rules,
     json_extract(e.properties, '$.content')              AS content,
     json_extract(e.properties, '$.expires')              AS expires,
+    json_extract(e.properties, '$.pinned')               AS pinned,
+    json_extract(e.properties, '$.provenance')           AS provenance,
     (
         SELECT json_group_array(tag)
         FROM entity_tags

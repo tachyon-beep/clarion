@@ -118,8 +118,11 @@ fn migration_0001_creates_guidance_sheets_view() {
         views.iter().any(|v| v == "guidance_sheets"),
         "views: {views:?}"
     );
-    conn.execute_batch("SELECT id, name, priority FROM guidance_sheets LIMIT 0")
-        .expect("guidance_sheets queryable");
+    conn.execute_batch(
+        "SELECT id, name, scope_level, scope_rank, pinned, provenance \
+         FROM guidance_sheets LIMIT 0",
+    )
+    .expect("guidance_sheets queryable");
 }
 
 #[test]
@@ -127,7 +130,7 @@ fn migration_0001_creates_partial_indexes() {
     let tempdir = tempfile::tempdir().unwrap();
     let conn = open_fresh(&tempdir);
     let indexes = index_names(&conn);
-    for expected in &["ix_entities_churn", "ix_entities_priority"] {
+    for expected in &["ix_entities_churn", "ix_entities_scope_rank"] {
         assert!(
             indexes.iter().any(|i| i == expected),
             "missing index {expected} in {indexes:?}"
@@ -137,35 +140,108 @@ fn migration_0001_creates_partial_indexes() {
 
 #[test]
 fn entity_generated_columns_extract_from_properties_json() {
+    // Round-trips a guidance entity's scope_level / scope_rank / git_churn_count
+    // generated columns. scope_level (TEXT) carries the enum value verbatim;
+    // scope_rank (INTEGER) is CASE-mapped per ADR-024 so that ORDER BY
+    // scope_rank produces the documented composition order
+    // project→subsystem→package→module→class→function (1..6).
     let tempdir = tempfile::tempdir().unwrap();
     let conn = open_fresh(&tempdir);
-    let props = r#"{"priority": 2, "git_churn_count": 42}"#;
+    let props = r#"{"scope_level": "subsystem", "git_churn_count": 42}"#;
     conn.execute(
         "INSERT INTO entities (id, plugin_id, kind, name, short_name, properties, \
          created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, \
          strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         params![
-            "python:function:demo.f",
-            "python",
-            "function",
-            "demo.f",
-            "f",
+            "core:guidance:demo.subsystem-sheet",
+            "core",
+            "guidance",
+            "demo.subsystem-sheet",
+            "subsystem-sheet",
             props
         ],
     )
     .unwrap();
-    // priority is a TEXT-affinity generated column; json_extract yields the
-    // JSON-native integer but SQLite coerces it to text on storage.
-    let (priority, churn): (Option<String>, Option<i64>) = conn
+    let (scope_level, scope_rank, churn): (Option<String>, Option<i64>, Option<i64>) = conn
         .query_row(
-            "SELECT priority, git_churn_count FROM entities WHERE id = ?1",
-            params!["python:function:demo.f"],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            "SELECT scope_level, scope_rank, git_churn_count FROM entities WHERE id = ?1",
+            params!["core:guidance:demo.subsystem-sheet"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(priority.as_deref(), Some("2"));
+    assert_eq!(scope_level.as_deref(), Some("subsystem"));
+    assert_eq!(scope_rank, Some(2));
     assert_eq!(churn, Some(42));
+}
+
+#[test]
+fn scope_rank_case_mapping_covers_all_six_levels() {
+    // Asserts the full CASE table in 0001_initial_schema.sql:
+    // project=1, subsystem=2, package=3, module=4, class=5, function=6.
+    // ORDER BY scope_rank ASC is the canonical guidance-composition order
+    // (outer→inner, project outermost / function innermost; ADR-024).
+    let tempdir = tempfile::tempdir().unwrap();
+    let conn = open_fresh(&tempdir);
+    let cases: &[(&str, i64)] = &[
+        ("project", 1),
+        ("subsystem", 2),
+        ("package", 3),
+        ("module", 4),
+        ("class", 5),
+        ("function", 6),
+    ];
+    for (level, expected_rank) in cases {
+        let id = format!("core:guidance:demo.level-{level}");
+        let props = format!(r#"{{"scope_level": "{level}"}}"#);
+        conn.execute(
+            "INSERT INTO entities (id, plugin_id, kind, name, short_name, properties, \
+             created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, \
+             strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![&id, "core", "guidance", &id, level, &props],
+        )
+        .unwrap();
+        let rank: Option<i64> = conn
+            .query_row(
+                "SELECT scope_rank FROM entities WHERE id = ?1",
+                params![&id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            rank,
+            Some(*expected_rank),
+            "scope_level {level:?} should map to scope_rank {expected_rank}",
+        );
+    }
+
+    // An unknown enum value yields NULL (CASE has no ELSE branch); the
+    // partial index `ix_entities_scope_rank ... WHERE scope_rank IS NOT NULL`
+    // excludes such rows from the ordered index.
+    conn.execute(
+        "INSERT INTO entities (id, plugin_id, kind, name, short_name, properties, \
+         created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, \
+         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        params![
+            "core:guidance:demo.level-bogus",
+            "core",
+            "guidance",
+            "demo.level-bogus",
+            "level-bogus",
+            r#"{"scope_level": "bogus"}"#,
+        ],
+    )
+    .unwrap();
+    let rank: Option<i64> = conn
+        .query_row(
+            "SELECT scope_rank FROM entities WHERE id = ?1",
+            params!["core:guidance:demo.level-bogus"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rank, None, "unknown scope_level should produce NULL rank");
 }
 
 #[test]
