@@ -327,11 +327,11 @@ B.2 is done for Sprint 2 when all of:
 - All ADR-023 gates green on the closing commit.
 - This design doc reviewed and approved by user.
 
-## 10. Open questions for the implementation phase (not panel-resolved; lower stakes)
+## 10. Implementation-phase decisions (resolved post-spec-review)
 
-- **`__version__` package bump**: should `clarion_plugin_python.__version__` move from `0.1.0` to `0.1.1` (patch) or `0.2.0` (minor; matches `ontology_version`)? The package version and the ontology version are different concepts — the package version tracks code releases; the ontology version tracks declared kind set. Recommend `0.1.1` (patch) since no breaking API change ships in B.2.
-- **Top-level `__init__.py` skip — stderr line wording**: the convention used by syntax-error skipping is `clarion-plugin-python: skipping <path>: <reason>\n`. For top-level `__init__.py` skip, propose: `clarion-plugin-python: skipping <path>: top-level __init__.py has no package name\n`.
-- **Lint guard for ontology-version drift**: a CI shell-assertion comparing `plugin.toml::ontology_version` and `server.py::ONTOLOGY_VERSION`. Filed as a follow-up issue after B.2, not blocking.
+- **`__version__` package bump**: `clarion_plugin_python.__version__` moves from `0.1.0` to `0.1.1` (patch). The package version tracks code releases; the ontology version tracks declared kind set. They are different concepts — no breaking API change ships in B.2, so the patch bump is correct.
+- **Top-level `__init__.py` skip — stderr line wording**: `clarion-plugin-python: skipping <path>: top-level __init__.py has no package name\n`. Matches the existing syntax-error skip convention at `extractor.py:103-106` (`clarion-plugin-python: skipping <path>: <reason>\n`).
+- **Lint guard for ontology-version drift**: deferred as a follow-up — filigree [`clarion-8befae708b`](../../../.filigree/) (P3 task; not blocking B.2). B.2 ships with the two values agreeing by inspection; the lint guard is risk insurance against future drift.
 
 ## 11. Panel-review record
 
