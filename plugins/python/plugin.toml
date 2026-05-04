@@ -25,15 +25,19 @@ wardline_aware = true
 reads_outside_project_root = false
 
 [ontology]
-# Sprint 1 narrow scope: functions only (WP3 §1). Classes, modules,
-# decorators are WP3-feature-complete kinds.
-entity_kinds = ["function"]
+# Sprint 2 B.2: classes + modules join the kind set. Decorators, edges,
+# imports, calls remain WP3-feature-complete (later Sprint 2+).
+entity_kinds = ["function", "class", "module"]
 edge_kinds = []
 # Per ADR-022: uppercase `CLA-{PLUGIN_ID_UPPER}-`. Reserved at parse
 # against the CLA-INFRA-* and CLA-FACT-* namespaces.
 rule_id_prefix = "CLA-PY-"
-# Feeds ADR-007 cache keying; bump when the entity/edge/rule set shifts.
-ontology_version = "0.1.0"
+# Bumps when the entity/edge/rule set shifts. NOTE: ADR-007's summary-cache
+# key is the 5-tuple (entity_id, content_hash, prompt_template_id,
+# model_tier, guidance_fingerprint) — ontology_version is handshake-validation,
+# NOT a cache-key component. New module/class entity_ids miss the cache by
+# component-1 of the 5-tuple organically.
+ontology_version = "0.2.0"
 
 [integrations.wardline]
 # Verified present in Wardline source (src/wardline/core/registry.py:55,
