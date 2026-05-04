@@ -77,11 +77,39 @@
     "expected_entity_id": "python:function:pkg.sub.mod.deep_func"
   },
   {
-    "description": "module entity (future Python plugin kind)",
+    "description": "module entity (B.2)",
     "plugin_id": "python",
     "kind": "module",
     "canonical_qualified_name": "pkg.submodule",
     "expected_entity_id": "python:module:pkg.submodule"
+  },
+  {
+    "description": "module entity: __init__.py collapse case (B.2)",
+    "plugin_id": "python",
+    "kind": "module",
+    "canonical_qualified_name": "pkg",
+    "expected_entity_id": "python:module:pkg"
+  },
+  {
+    "description": "class entity: simple module-level (B.2)",
+    "plugin_id": "python",
+    "kind": "class",
+    "canonical_qualified_name": "pkg.mod.Foo",
+    "expected_entity_id": "python:class:pkg.mod.Foo"
+  },
+  {
+    "description": "class entity: nested class chains names with no locals separator (B.2)",
+    "plugin_id": "python",
+    "kind": "class",
+    "canonical_qualified_name": "pkg.mod.Foo.Bar",
+    "expected_entity_id": "python:class:pkg.mod.Foo.Bar"
+  },
+  {
+    "description": "class entity: class-in-function gets <locals> at function boundary (B.2)",
+    "plugin_id": "python",
+    "kind": "class",
+    "canonical_qualified_name": "pkg.mod.f.<locals>.C",
+    "expected_entity_id": "python:class:pkg.mod.f.<locals>.C"
   },
   {
     "description": "core file entity: top-level file",
