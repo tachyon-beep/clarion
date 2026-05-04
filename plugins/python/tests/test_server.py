@@ -205,11 +205,16 @@ def test_analyze_file_returns_extracted_entities(tmp_path: Path) -> None:
         response = _read_frame(proc.stdout)
         assert response["id"] == 2
         entities = response["result"]["entities"]
-        ids = {e["id"] for e in entities}
-        assert ids == {
+        function_ids = {e["id"] for e in entities if e["kind"] == "function"}
+        class_ids = {e["id"] for e in entities if e["kind"] == "class"}
+        module_ids = {e["id"] for e in entities if e["kind"] == "module"}
+
+        assert module_ids == {"python:module:demo"}
+        assert function_ids == {
             "python:function:demo.hello",
             "python:function:demo.Foo.bar",
         }
+        assert class_ids == {"python:class:demo.Foo"}
 
         proc.stdin.close()
         proc.wait(timeout=5)

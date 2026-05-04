@@ -207,12 +207,15 @@ def _walk(
     out: list[RawEntity],
 ) -> None:
     for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            out.append(_build_entity(child, parents, dotted_module, file_path))
+        match child:
+            case ast.FunctionDef() | ast.AsyncFunctionDef():
+                out.append(_build_function_entity(child, parents, dotted_module, file_path))
+            case ast.ClassDef():
+                out.append(_build_class_entity(child, parents, dotted_module, file_path))
         _walk(child, [*parents, child], dotted_module, file_path, out)
 
 
-def _build_entity(
+def _build_function_entity(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     parents: list[ast.AST],
     dotted_module: str,
@@ -225,6 +228,39 @@ def _build_entity(
     return {
         "id": entity_id(_PLUGIN_ID, "function", qualified_name),
         "kind": "function",
+        "qualified_name": qualified_name,
+        "source": {
+            "file_path": file_path,
+            "source_range": {
+                "start_line": node.lineno,
+                "start_col": node.col_offset,
+                "end_line": end_line,
+                "end_col": end_col,
+            },
+        },
+    }
+
+
+def _build_class_entity(
+    node: ast.ClassDef,
+    parents: list[ast.AST],
+    dotted_module: str,
+    file_path: str,
+) -> RawEntity:
+    """Build a class entity. Uses real ast.end_lineno/end_col_offset (not the module sentinel).
+
+    Class methods continue to emit as ``function`` entities (per
+    detailed-design.md:67); no separate ``method`` kind. Nested classes
+    nest in the qualname per ``reconstruct_qualname`` (no ``<locals>``
+    between class names).
+    """
+    python_qualname = reconstruct_qualname(node, parents)
+    qualified_name = f"{dotted_module}.{python_qualname}" if dotted_module else python_qualname
+    end_line = node.end_lineno if node.end_lineno is not None else node.lineno
+    end_col = node.end_col_offset if node.end_col_offset is not None else node.col_offset
+    return {
+        "id": entity_id(_PLUGIN_ID, "class", qualified_name),
+        "kind": "class",
         "qualified_name": qualified_name,
         "source": {
             "file_path": file_path,

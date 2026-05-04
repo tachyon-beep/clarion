@@ -243,3 +243,78 @@ def test_top_level_init_py_skipped_with_stderr(
     captured = capsys.readouterr()
     assert "__init__.py" in captured.err
     assert "top-level __init__.py has no package name" in captured.err
+
+
+def test_class_entity_simple() -> None:
+    """`class Foo: pass` → one class entity + one module entity."""
+    entities = extract("class Foo:\n    pass\n", "demo.py")
+    class_entities = [e for e in entities if e["kind"] == "class"]
+    assert len(class_entities) == 1
+    cls = class_entities[0]
+    assert cls["id"] == "python:class:demo.Foo"
+    assert cls["kind"] == "class"
+    assert cls["qualified_name"] == "demo.Foo"
+    assert cls["source"]["file_path"] == "demo.py"
+    # Class uses real ast end_lineno data (not the module sentinel).
+    sr = cls["source"]["source_range"]
+    assert sr["start_line"] == 1
+    assert sr["start_col"] == 0
+    assert sr["end_line"] >= 1
+    # parse_status MUST NOT be on class entities.
+    assert "parse_status" not in cls
+
+
+def test_class_entity_nested() -> None:
+    """`class A: class B: pass` → two class entities (A, A.B) + one module entity."""
+    entities = extract("class A:\n    class B:\n        pass\n", "demo.py")
+    class_ids = {e["id"] for e in entities if e["kind"] == "class"}
+    assert class_ids == {
+        "python:class:demo.A",
+        "python:class:demo.A.B",
+    }
+
+
+def test_class_in_function_qualname() -> None:
+    """`def f(): class C: pass` → class entity at f.<locals>.C (function-parent gets <locals>)."""
+    entities = extract("def f():\n    class C:\n        pass\n", "demo.py")
+    class_ids = {e["id"] for e in entities if e["kind"] == "class"}
+    function_ids = {e["id"] for e in entities if e["kind"] == "function"}
+    assert class_ids == {"python:class:demo.f.<locals>.C"}
+    assert function_ids == {"python:function:demo.f"}
+
+
+def test_class_method_emitted_as_function() -> None:
+    """Class methods continue as function-kind (no separate method kind)."""
+    entities = extract(
+        "class Foo:\n    def bar(self):\n        pass\n",
+        "demo.py",
+    )
+    class_ids = {e["id"] for e in entities if e["kind"] == "class"}
+    function_ids = {e["id"] for e in entities if e["kind"] == "function"}
+    assert class_ids == {"python:class:demo.Foo"}
+    assert function_ids == {"python:function:demo.Foo.bar"}
+
+
+def test_async_class_method() -> None:
+    """`async def` inside a class still emits as function-kind."""
+    entities = extract(
+        "class Foo:\n    async def bar(self):\n        pass\n",
+        "demo.py",
+    )
+    function_entities = [e for e in entities if e["kind"] == "function"]
+    assert len(function_entities) == 1
+    assert function_entities[0]["id"] == "python:function:demo.Foo.bar"
+
+
+def test_class_source_range_uses_ast_data_not_module_sentinel() -> None:
+    """Class entity uses real lineno/end_lineno (not the module-entity {1,0,N,0} sentinel).
+
+    For `class A:\\n    pass\\n`, end_lineno is 2 and end_col_offset > 0.
+    """
+    entities = extract("class A:\n    pass\n", "demo.py")
+    cls = next(e for e in entities if e["kind"] == "class")
+    sr = cls["source"]["source_range"]
+    # Class body extends past the header line.
+    assert sr["end_line"] == 2
+    # Real column data, not the module sentinel 0.
+    assert sr["end_col"] > 0
