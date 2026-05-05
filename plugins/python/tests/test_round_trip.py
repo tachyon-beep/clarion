@@ -52,7 +52,7 @@ def _locate_binary() -> Path:
     return binary
 
 
-def test_round_trip_self_analysis() -> None:
+def test_round_trip_self_analysis() -> None:  # noqa: PLR0915 - by-kind invariants are flat asserts
     """Plugin → analyze_file on its own extractor.py → expected entities appear."""
     binary = _locate_binary()
 
@@ -113,19 +113,44 @@ def test_round_trip_self_analysis() -> None:
         assert response["id"] == 2
 
         entities = response["result"]["entities"]
-        ids = {e["id"] for e in entities}
-        # Public extractor API must be present.
-        assert "python:function:clarion_plugin_python.extractor.module_dotted_name" in ids
-        assert "python:function:clarion_plugin_python.extractor.extract" in ids
-        # Private walker is a FunctionDef too, so it emits.
-        assert "python:function:clarion_plugin_python.extractor._walk" in ids
-        assert "python:function:clarion_plugin_python.extractor._build_entity" in ids
+        function_entities = [e for e in entities if e["kind"] == "function"]
+        module_entities = [e for e in entities if e["kind"] == "module"]
+        class_entities = [e for e in entities if e["kind"] == "class"]
+        function_ids = {e["id"] for e in function_entities}
 
-        # Every entity should carry kind="function" and the absolute
-        # source.file_path we sent (project_root relativisation only affects
-        # the qualified_name prefix, not source.file_path).
+        # Invariants — no exact totals (those become merge-conflict generators
+        # the moment someone adds a private helper to extractor.py).
+        assert len(module_entities) == 1, "exactly one module entity per analyzed file"
+        assert module_entities[0]["id"] == "python:module:clarion_plugin_python.extractor"
+        assert module_entities[0].get("parse_status") == "ok"
+
+        # Public extractor API must be present.
+        assert "python:function:clarion_plugin_python.extractor.module_dotted_name" in function_ids
+        assert "python:function:clarion_plugin_python.extractor.extract" in function_ids
+        # Private walker is a FunctionDef too, so it emits.
+        assert "python:function:clarion_plugin_python.extractor._walk" in function_ids
+        # B.2 renamed `_build_entity` → `_build_function_entity` and added
+        # `_build_class_entity` + `_build_module_entity` (and `_module_source_range`).
+        assert (
+            "python:function:clarion_plugin_python.extractor._build_function_entity" in function_ids
+        )
+        assert "python:function:clarion_plugin_python.extractor._build_class_entity" in function_ids
+        assert (
+            "python:function:clarion_plugin_python.extractor._build_module_entity" in function_ids
+        )
+
+        # extractor.py defines its wire-shape TypedDicts at module level
+        # (SourceRange, EntitySource, RawEntity); these are AST ClassDefs
+        # and so emit as `class` entities. Subset assertion only —
+        # exhaustive enumeration would be brittle.
+        class_ids = {e["id"] for e in class_entities}
+        assert "python:class:clarion_plugin_python.extractor.SourceRange" in class_ids
+        assert "python:class:clarion_plugin_python.extractor.EntitySource" in class_ids
+        assert "python:class:clarion_plugin_python.extractor.RawEntity" in class_ids
+
+        # Every entity carries the absolute source.file_path we sent
+        # (project_root relativisation only affects the qualified_name prefix).
         for entity in entities:
-            assert entity["kind"] == "function"
             assert entity["source"]["file_path"] == str(target)
 
         # Graceful shutdown.

@@ -66,12 +66,16 @@ clarion analyze .
 # ── 7. Verify entity via sqlite3 ─────────────────────────────────────────────
 log "verifying persisted entity via sqlite3 ..."
 RESULT=$(sqlite3 "$DEMO_DIR/.clarion/clarion.db" "select id, kind from entities order by id;")
-EXPECTED="python:function:demo.hello|function"
+# B.2 (Sprint 2): every analyzed file emits a module entity in addition to
+# its function/class entities. The demo file `def hello(): return "world"`
+# produces exactly two rows.
+EXPECTED="python:function:demo.hello|function
+python:module:demo|module"
 
 if [ "$RESULT" != "$EXPECTED" ]; then
     log "DB contents:"
     sqlite3 "$DEMO_DIR/.clarion/clarion.db" "select * from entities;" >&2 || true
-    fail "expected exactly '$EXPECTED', got '$RESULT'"
+    fail "expected exactly:\n$EXPECTED\ngot:\n$RESULT"
 fi
 
-log "PASS: walking skeleton persisted $RESULT"
+log "PASS: walking skeleton persisted module + function entities"

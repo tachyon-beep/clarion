@@ -32,7 +32,7 @@ from clarion_plugin_python.extractor import extract
 from clarion_plugin_python.stdout_guard import install_stdio
 from clarion_plugin_python.wardline_probe import probe as wardline_probe
 
-ONTOLOGY_VERSION = "0.1.0"
+ONTOLOGY_VERSION = "0.2.0"
 
 # Sprint 1 defaults for the Wardline version pin (WP3 L8 + plugin.toml
 # `[integrations.wardline]`). Kept as module constants so Task 7's

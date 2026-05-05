@@ -74,8 +74,8 @@ def test_initialize_roundtrip() -> None:
         assert response["id"] == 1
         result = response["result"]
         assert result["name"] == "clarion-plugin-python"
-        assert result["version"] == "0.1.0"
-        assert result["ontology_version"] == "0.1.0"
+        assert result["version"] == "0.1.1"
+        assert result["ontology_version"] == "0.2.0"
         # Capabilities carry the L8 Wardline probe result. We don't pin a
         # specific status here because the probe's output depends on whether
         # wardline is installed in the test environment — all three legal
@@ -205,11 +205,16 @@ def test_analyze_file_returns_extracted_entities(tmp_path: Path) -> None:
         response = _read_frame(proc.stdout)
         assert response["id"] == 2
         entities = response["result"]["entities"]
-        ids = {e["id"] for e in entities}
-        assert ids == {
+        function_ids = {e["id"] for e in entities if e["kind"] == "function"}
+        class_ids = {e["id"] for e in entities if e["kind"] == "class"}
+        module_ids = {e["id"] for e in entities if e["kind"] == "module"}
+
+        assert module_ids == {"python:module:demo"}
+        assert function_ids == {
             "python:function:demo.hello",
             "python:function:demo.Foo.bar",
         }
+        assert class_ids == {"python:class:demo.Foo"}
 
         proc.stdin.close()
         proc.wait(timeout=5)
