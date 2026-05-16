@@ -107,8 +107,9 @@ def test_matches_shared_fixture() -> None:
     would break silently. CI fails both sides in lockstep.
     """
     with _FIXTURE_PATH.open() as fh:
-        rows = json.load(fh)
-    assert len(rows) >= 20, f"fixture must have >=20 rows, got {len(rows)}"
+        fixture = json.load(fh)
+    rows = fixture["entities"]
+    assert len(rows) >= 20, f"fixture must have >=20 entity rows, got {len(rows)}"
     for row in rows:
         actual = entity_id(
             row["plugin_id"],
@@ -116,3 +117,27 @@ def test_matches_shared_fixture() -> None:
             row["canonical_qualified_name"],
         )
         assert actual == row["expected_entity_id"], f"mismatch for row {row!r}"
+
+
+def test_matches_shared_contains_edge_fixture() -> None:
+    """B.3 cross-language parity for contains-edge wire shape (ADR-026).
+
+    Both Rust and Python read the same fixture rows and construct a
+    contains-edge dict from (parent_id, child_id), asserting byte-for-byte
+    equality with ``expected_wire``. Catches drift in the wire shape (e.g.
+    one side accidentally adding ``source_byte_*`` keys).
+    """
+    with _FIXTURE_PATH.open() as fh:
+        fixture = json.load(fh)
+    edges = fixture["contains_edges"]
+    assert len(edges) >= 3, f"fixture must have >=3 contains-edge rows, got {len(edges)}"
+    for row in edges:
+        wire = {
+            "kind": "contains",
+            "from_id": row["parent_id"],
+            "to_id": row["child_id"],
+        }
+        assert wire == row["expected_wire"], f"mismatch for edge row {row!r}"
+        # No source_byte_* fields per ADR-026 decision 3.
+        assert "source_byte_start" not in wire
+        assert "source_byte_end" not in wire

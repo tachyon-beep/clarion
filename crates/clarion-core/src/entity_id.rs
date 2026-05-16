@@ -335,6 +335,21 @@ mod tests {
         );
     }
 
+    #[derive(Debug, serde::Deserialize)]
+    struct ContainsEdgeFixtureRow {
+        #[allow(dead_code)]
+        description: String,
+        parent_id: String,
+        child_id: String,
+        expected_wire: serde_json::Value,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct SharedFixture {
+        entities: Vec<FixtureRow>,
+        contains_edges: Vec<ContainsEdgeFixtureRow>,
+    }
+
     #[test]
     fn shared_fixture_byte_for_byte_parity() {
         // L2 byte-for-byte parity proof (WP3 Task 5 / UQ-WP3-08): this
@@ -343,18 +358,18 @@ mod tests {
         // Divergence on either side fails CI. Retroactively earns the
         // signoff A.1.4 proof (WP1 ticked it against the fixture before
         // the file existed — WP3 Task 5 is where it lands).
-        let fixture_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/entity_id.json");
-        let contents = std::fs::read_to_string(&fixture_path)
-            .unwrap_or_else(|err| panic!("read fixture {}: {err}", fixture_path.display()));
-        let rows: Vec<FixtureRow> =
-            serde_json::from_str(&contents).expect("fixture parses as Vec<FixtureRow>");
+        //
+        // B.3 wrapped the file in an object (`{entities: [...],
+        // contains_edges: [...]}`) so contains-edge parity rows ride
+        // alongside the entity-id rows.
+        let fixture: SharedFixture = load_fixture();
+        let rows = &fixture.entities;
         assert!(
             rows.len() >= 20,
-            "fixture must have at least 20 rows; got {}",
+            "fixture must have at least 20 entity rows; got {}",
             rows.len()
         );
-        for row in &rows {
+        for row in rows {
             let actual = entity_id(&row.plugin_id, &row.kind, &row.canonical_qualified_name)
                 .unwrap_or_else(|err| panic!("row {row:?} failed to assemble: {err}"));
             assert_eq!(
@@ -363,5 +378,49 @@ mod tests {
                 "mismatch on row {row:?}"
             );
         }
+    }
+
+    #[test]
+    fn shared_contains_edge_fixture_parity() {
+        // B.3 cross-language parity for the `contains` edge wire shape
+        // (ADR-026 decision 3 + 4): the natural-key triple is the only
+        // identity; no source_byte_* fields ever appear on `contains`. Both
+        // sides build the wire dict from (parent_id, child_id) and assert
+        // byte-for-byte equality with `expected_wire`.
+        let fixture: SharedFixture = load_fixture();
+        let edges = &fixture.contains_edges;
+        assert!(
+            edges.len() >= 3,
+            "fixture must have at least 3 contains-edge rows; got {}",
+            edges.len()
+        );
+        for row in edges {
+            let wire = serde_json::json!({
+                "kind": "contains",
+                "from_id": row.parent_id,
+                "to_id": row.child_id,
+            });
+            assert_eq!(
+                wire, row.expected_wire,
+                "mismatch on contains-edge row {row:?}"
+            );
+            let obj = wire.as_object().expect("wire is an object");
+            assert!(
+                !obj.contains_key("source_byte_start"),
+                "contains edge must never carry source_byte_start"
+            );
+            assert!(
+                !obj.contains_key("source_byte_end"),
+                "contains edge must never carry source_byte_end"
+            );
+        }
+    }
+
+    fn load_fixture() -> SharedFixture {
+        let fixture_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/entity_id.json");
+        let contents = std::fs::read_to_string(&fixture_path)
+            .unwrap_or_else(|err| panic!("read fixture {}: {err}", fixture_path.display()));
+        serde_json::from_str(&contents).expect("fixture parses as SharedFixture")
     }
 }
