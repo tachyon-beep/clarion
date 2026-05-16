@@ -278,6 +278,72 @@ fn fts_trigger_populates_entity_fts_on_insert() {
 }
 
 #[test]
+fn edges_table_has_no_id_column() {
+    // ADR-026 decision 4: drop synthetic `id` PK from edges. Natural key
+    // `(kind, from_id, to_id)` is the only identity.
+    let tempdir = tempfile::tempdir().unwrap();
+    let conn = open_fresh(&tempdir);
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('edges')")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(std::result::Result::unwrap)
+        .collect();
+    assert!(
+        !columns.iter().any(|c| c == "id"),
+        "edges should not have an id column post-ADR-026; columns: {columns:?}"
+    );
+}
+
+#[test]
+fn edges_table_primary_key_is_kind_from_to() {
+    // ADR-026 decision 4: PK is the natural composite `(kind, from_id, to_id)`.
+    let tempdir = tempfile::tempdir().unwrap();
+    let conn = open_fresh(&tempdir);
+    let mut pk_cols: Vec<(i64, String)> = conn
+        .prepare("SELECT pk, name FROM pragma_table_info('edges') WHERE pk > 0 ORDER BY pk")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .map(std::result::Result::unwrap)
+        .collect();
+    pk_cols.sort_by_key(|(rank, _)| *rank);
+    let names: Vec<String> = pk_cols.into_iter().map(|(_, n)| n).collect();
+    assert_eq!(
+        names,
+        vec![
+            "kind".to_string(),
+            "from_id".to_string(),
+            "to_id".to_string()
+        ],
+        "edges PK must be (kind, from_id, to_id)"
+    );
+}
+
+#[test]
+fn edges_table_is_without_rowid() {
+    // ADR-026 decision 4 / Q4 panel reconciliation: WITHOUT ROWID clause
+    // optimises storage now that the natural PK obviates the rowid.
+    let tempdir = tempfile::tempdir().unwrap();
+    let conn = open_fresh(&tempdir);
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='edges'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let normalised = sql.to_ascii_uppercase();
+    assert!(
+        normalised.contains("WITHOUT ROWID"),
+        "edges should be WITHOUT ROWID; sql was: {sql}"
+    );
+}
+
+#[test]
 fn migrations_are_idempotent() {
     let tempdir = tempfile::tempdir().unwrap();
     let mut conn = open_fresh(&tempdir);

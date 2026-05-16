@@ -62,9 +62,12 @@ CREATE TABLE entity_tags (
 );
 CREATE INDEX ix_entity_tags_tag ON entity_tags(tag);
 
--- Edges. Deduped by (kind, from_id, to_id); see detailed-design.md §3 note.
+-- Edges. Natural PK (kind, from_id, to_id) per ADR-026 decision 4 (B.3).
+-- Synthetic `id` column dropped: no Sprint-1 or B.3 query selects edges by
+-- `id`; the natural composite is stable across re-analyze, and the only
+-- finding-attachment cross-reference (findings.entity_id) points at entities,
+-- not edges. WITHOUT ROWID drops the now-redundant rowid pages.
 CREATE TABLE edges (
-    id                 TEXT PRIMARY KEY,
     kind               TEXT NOT NULL,
     from_id            TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
     to_id              TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
@@ -72,8 +75,8 @@ CREATE TABLE edges (
     source_file_id     TEXT REFERENCES entities(id),
     source_byte_start  INTEGER,
     source_byte_end    INTEGER,
-    UNIQUE (kind, from_id, to_id)
-);
+    PRIMARY KEY (kind, from_id, to_id)
+) WITHOUT ROWID;
 CREATE INDEX ix_edges_from_kind ON edges(from_id, kind);
 CREATE INDEX ix_edges_to_kind   ON edges(to_id,   kind);
 CREATE INDEX ix_edges_kind      ON edges(kind);
