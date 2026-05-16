@@ -91,6 +91,30 @@ pub fn run(path: &Path, force: bool) -> Result<()> {
 
     fs::create_dir_all(&clarion_dir).with_context(|| format!("mkdir {}", clarion_dir.display()))?;
 
+    // Cleanup guard: if any post-mkdir step fails, remove .clarion/ before
+    // bubbling the error so the next install attempt isn't blocked by the
+    // "already exists" check (clarion-ed5017139f).
+    if let Err(err) = populate_after_mkdir(&clarion_dir, &project_root) {
+        if let Err(cleanup_err) = fs::remove_dir_all(&clarion_dir) {
+            tracing::warn!(
+                clarion_dir = %clarion_dir.display(),
+                error = %cleanup_err,
+                "install failed and cleanup of partial .clarion/ also failed; \
+                 manual rm -rf may be required"
+            );
+        }
+        return Err(err);
+    }
+
+    tracing::info!(
+        clarion_dir = %clarion_dir.display(),
+        "clarion install complete"
+    );
+    println!("Initialised {}", clarion_dir.display());
+    Ok(())
+}
+
+fn populate_after_mkdir(clarion_dir: &Path, project_root: &Path) -> Result<()> {
     let db_path = clarion_dir.join("clarion.db");
     initialise_db(&db_path).context("initialise clarion.db")?;
 
@@ -112,12 +136,6 @@ pub fn run(path: &Path, force: bool) -> Result<()> {
         fs::write(&yaml_path, CLARION_YAML_STUB)
             .with_context(|| format!("write {}", yaml_path.display()))?;
     }
-
-    tracing::info!(
-        clarion_dir = %clarion_dir.display(),
-        "clarion install complete"
-    );
-    println!("Initialised {}", clarion_dir.display());
     Ok(())
 }
 
