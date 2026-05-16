@@ -173,23 +173,22 @@ def _resolve_module_path(file_path_raw: str, state: ServerState) -> str:
 
 
 def handle_analyze_file(params: dict[str, Any], state: ServerState) -> dict[str, Any]:
-    """Read the requested file, extract entities, return AnalyzeFileResult shape."""
+    """Read the requested file, extract entities + edges, return AnalyzeFileResult shape."""
     file_path_raw = params.get("file_path")
     if not isinstance(file_path_raw, str):
-        return {"entities": []}
+        return {"entities": [], "edges": []}
     path = Path(file_path_raw)
     try:
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         sys.stderr.write(f"clarion-plugin-python: cannot read {file_path_raw}: {exc}\n")
-        return {"entities": []}
+        return {"entities": [], "edges": []}
     # Emit source.file_path exactly as received so the host's jail check
     # (which canonicalises against project_root) sees the original path.
     # Derive qualified-name dotting from the project-relative form.
     module_prefix = _resolve_module_path(file_path_raw, state)
-    return {
-        "entities": extract(source, file_path_raw, module_prefix_path=module_prefix),
-    }
+    entities, edges = extract(source, file_path_raw, module_prefix_path=module_prefix)
+    return {"entities": entities, "edges": edges}
 
 
 Handler = Callable[[dict[str, Any], ServerState], dict[str, Any]]

@@ -84,13 +84,34 @@ class RawEntity(TypedDict):
     ``parse_status`` is set on module entities only and rides through the
     host's ``serde(flatten) extra`` map. Class and function entities omit
     it; the field is ``NotRequired`` to keep mypy --strict happy.
+
+    ``parent_id`` is a B.3 addition (ADR-026 decision 2): the dual-encoded
+    half of the parent/contains relationship. Omitted entirely for module
+    entities (they have no parent within the file); set on every
+    function/class entity.
     """
 
     id: str
     kind: str  # "function" | "class" | "module"; not narrowed to keep extension cheap.
     qualified_name: str
     source: EntitySource
+    parent_id: NotRequired[str]
     parse_status: NotRequired[Literal["ok", "syntax_error"]]
+
+
+class RawEdge(TypedDict):
+    """Wire shape matching the Rust host's RawEdge contract (B.3 / ADR-026).
+
+    Source range fields are NotRequired and omitted entirely for structural
+    kinds (``contains``); anchored kinds (``calls``, etc.) include them when
+    the language reaches that part of the ontology in later sprints.
+    """
+
+    kind: str
+    from_id: str
+    to_id: str
+    source_byte_start: NotRequired[int]
+    source_byte_end: NotRequired[int]
 
 
 def _module_source_range(source: str) -> SourceRange:
@@ -162,16 +183,22 @@ def extract(
     file_path: str,
     *,
     module_prefix_path: str | None = None,
-) -> list[RawEntity]:
-    """Return a list of entities extracted from ``source``.
+) -> tuple[list[RawEntity], list[RawEdge]]:
+    """Return (entities, edges) extracted from ``source``.
 
     Always emits exactly one module entity (B.2 Q1) prepended to the
-    result; functions and classes follow. ``file_path`` lands in each
-    entity's ``source.file_path`` verbatim. ``module_prefix_path``
-    (default: same as ``file_path``) is the path whose dotted form
-    prefixes every entity's ``qualified_name`` — callers can supply a
-    project-relative path here while keeping ``file_path`` absolute so
-    the host's path jail validates the original path.
+    entity list; functions and classes follow. B.3 also emits one
+    ``contains`` edge per non-module entity (immediate-parent → child),
+    plus a ``parent_id`` field on each non-module entity (the dual
+    encoding from ADR-026 decision 2). Module entities have no parent
+    within the file, so they omit ``parent_id`` and have no contains edge.
+
+    ``file_path`` lands in each entity's ``source.file_path`` verbatim.
+    ``module_prefix_path`` (default: same as ``file_path``) is the path
+    whose dotted form prefixes every entity's ``qualified_name`` —
+    callers can supply a project-relative path here while keeping
+    ``file_path`` absolute so the host's path jail validates the
+    original path.
     """
     prefix_source = module_prefix_path if module_prefix_path is not None else file_path
     dotted_module = module_dotted_name(prefix_source)
@@ -183,7 +210,7 @@ def extract(
             f"clarion-plugin-python: skipping {file_path}: "
             f"top-level __init__.py has no package name\n",
         )
-        return []
+        return [], []
 
     try:
         tree = ast.parse(source)
@@ -192,27 +219,68 @@ def extract(
             f"clarion-plugin-python: skipping {file_path}: syntax error at "
             f"line {exc.lineno}: {exc.msg}\n",
         )
-        return [_build_module_entity(source, dotted_module, file_path, "syntax_error")]
+        return [_build_module_entity(source, dotted_module, file_path, "syntax_error")], []
 
-    entities: list[RawEntity] = [_build_module_entity(source, dotted_module, file_path, "ok")]
-    _walk(tree, [tree], dotted_module, file_path, entities)
-    return entities
+    module_entity = _build_module_entity(source, dotted_module, file_path, "ok")
+    entities: list[RawEntity] = [module_entity]
+    edges: list[RawEdge] = []
+    _walk(tree, [tree], dotted_module, file_path, module_entity["id"], entities, edges)
+    return entities, edges
 
 
-def _walk(
+def _walk(  # noqa: PLR0913 - recursive walker needs both accumulators + parent context (B.3)
     node: ast.AST,
     parents: list[ast.AST],
     dotted_module: str,
     file_path: str,
-    out: list[RawEntity],
+    parent_entity_id: str,
+    out_entities: list[RawEntity],
+    out_edges: list[RawEdge],
 ) -> None:
+    """Recursively walk ``node``'s AST children, emitting entities + contains edges.
+
+    ``parent_entity_id`` is the immediate-parent entity id for direct
+    children of ``node``. When a child entity is itself an entity-bearing
+    node (Class/FunctionDef), recursion drops into it with the child's
+    own id as the new parent — so grandchildren get the right ``from_id``
+    on their contains edge (B.3 Q3: emitter is exhaustive, never
+    transitive).
+    """
     for child in ast.iter_child_nodes(node):
+        new_parent_id = parent_entity_id
         match child:
             case ast.FunctionDef() | ast.AsyncFunctionDef():
-                out.append(_build_function_entity(child, parents, dotted_module, file_path))
+                entity, child_id = _build_function_entity(
+                    child, parents, dotted_module, file_path, parent_entity_id
+                )
+                out_entities.append(entity)
+                out_edges.append(_contains_edge(parent_entity_id, child_id))
+                new_parent_id = child_id
             case ast.ClassDef():
-                out.append(_build_class_entity(child, parents, dotted_module, file_path))
-        _walk(child, [*parents, child], dotted_module, file_path, out)
+                entity, child_id = _build_class_entity(
+                    child, parents, dotted_module, file_path, parent_entity_id
+                )
+                out_entities.append(entity)
+                out_edges.append(_contains_edge(parent_entity_id, child_id))
+                new_parent_id = child_id
+        _walk(
+            child,
+            [*parents, child],
+            dotted_module,
+            file_path,
+            new_parent_id,
+            out_entities,
+            out_edges,
+        )
+
+
+def _contains_edge(parent_id: str, child_id: str) -> RawEdge:
+    """Build a ``contains`` edge per ADR-026 decision 3 (no source range)."""
+    return {
+        "kind": "contains",
+        "from_id": parent_id,
+        "to_id": child_id,
+    }
 
 
 def _build_function_entity(
@@ -220,13 +288,15 @@ def _build_function_entity(
     parents: list[ast.AST],
     dotted_module: str,
     file_path: str,
-) -> RawEntity:
+    parent_entity_id: str,
+) -> tuple[RawEntity, str]:
     python_qualname = reconstruct_qualname(node, parents)
     qualified_name = f"{dotted_module}.{python_qualname}" if dotted_module else python_qualname
     end_line = node.end_lineno if node.end_lineno is not None else node.lineno
     end_col = node.end_col_offset if node.end_col_offset is not None else node.col_offset
-    return {
-        "id": entity_id(_PLUGIN_ID, "function", qualified_name),
+    child_id = entity_id(_PLUGIN_ID, "function", qualified_name)
+    entity: RawEntity = {
+        "id": child_id,
         "kind": "function",
         "qualified_name": qualified_name,
         "source": {
@@ -238,7 +308,9 @@ def _build_function_entity(
                 "end_col": end_col,
             },
         },
+        "parent_id": parent_entity_id,
     }
+    return entity, child_id
 
 
 def _build_class_entity(
@@ -246,7 +318,8 @@ def _build_class_entity(
     parents: list[ast.AST],
     dotted_module: str,
     file_path: str,
-) -> RawEntity:
+    parent_entity_id: str,
+) -> tuple[RawEntity, str]:
     """Build a class entity. Uses real ast.end_lineno/end_col_offset (not the module sentinel).
 
     Class methods continue to emit as ``function`` entities (per
@@ -258,8 +331,9 @@ def _build_class_entity(
     qualified_name = f"{dotted_module}.{python_qualname}" if dotted_module else python_qualname
     end_line = node.end_lineno if node.end_lineno is not None else node.lineno
     end_col = node.end_col_offset if node.end_col_offset is not None else node.col_offset
-    return {
-        "id": entity_id(_PLUGIN_ID, "class", qualified_name),
+    child_id = entity_id(_PLUGIN_ID, "class", qualified_name)
+    entity: RawEntity = {
+        "id": child_id,
         "kind": "class",
         "qualified_name": qualified_name,
         "source": {
@@ -271,4 +345,6 @@ def _build_class_entity(
                 "end_col": end_col,
             },
         },
+        "parent_id": parent_entity_id,
     }
+    return entity, child_id

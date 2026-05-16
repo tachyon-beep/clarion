@@ -19,7 +19,7 @@ def test_empty_file_yields_one_module_entity() -> None:
 
     The function-extraction part of UQ-WP3-11 still holds: zero *function* entities.
     """
-    entities = extract("", "empty.py")
+    entities, _ = extract("", "empty.py")
     assert len(entities) == 1
     assert entities[0]["kind"] == "module"
     assert entities[0].get("parse_status") == "ok"
@@ -29,14 +29,14 @@ def test_empty_file_yields_one_module_entity() -> None:
 
 def test_whitespace_only_file_yields_one_module_entity() -> None:
     """Whitespace + comment-only file → one module entity (parse_status='ok'), zero functions."""
-    entities = extract("\n\n# just a comment\n", "empty.py")
+    entities, _ = extract("\n\n# just a comment\n", "empty.py")
     assert len(entities) == 1
     assert entities[0]["kind"] == "module"
     assert entities[0].get("parse_status") == "ok"
 
 
 def test_module_level_function() -> None:
-    entities = extract("def hello():\n    pass\n", "demo.py")
+    entities, _ = extract("def hello():\n    pass\n", "demo.py")
     function_entities = [e for e in entities if e["kind"] == "function"]
     assert len(function_entities) == 1
     entity = function_entities[0]
@@ -49,14 +49,14 @@ def test_module_level_function() -> None:
 
 
 def test_class_method() -> None:
-    entities = extract("class Foo:\n    def bar(self):\n        pass\n", "demo.py")
+    entities, _ = extract("class Foo:\n    def bar(self):\n        pass\n", "demo.py")
     function_entities = [e for e in entities if e["kind"] == "function"]
     assert len(function_entities) == 1
     assert function_entities[0]["id"] == "python:function:demo.Foo.bar"
 
 
 def test_nested_function_emits_both_outer_and_inner() -> None:
-    entities = extract("def outer():\n    def inner():\n        pass\n", "demo.py")
+    entities, _ = extract("def outer():\n    def inner():\n        pass\n", "demo.py")
     function_ids = {e["id"] for e in entities if e["kind"] == "function"}
     assert function_ids == {
         "python:function:demo.outer",
@@ -65,7 +65,7 @@ def test_nested_function_emits_both_outer_and_inner() -> None:
 
 
 def test_async_function() -> None:
-    entities = extract("async def aloha():\n    pass\n", "demo.py")
+    entities, _ = extract("async def aloha():\n    pass\n", "demo.py")
     function_entities = [e for e in entities if e["kind"] == "function"]
     assert len(function_entities) == 1
     assert function_entities[0]["id"] == "python:function:demo.aloha"
@@ -73,7 +73,7 @@ def test_async_function() -> None:
 
 def test_nested_class_method() -> None:
     source = "class Outer:\n    class Inner:\n        def method(self):\n            pass\n"
-    entities = extract(source, "demo.py")
+    entities, _ = extract(source, "demo.py")
     function_entities = [e for e in entities if e["kind"] == "function"]
     assert len(function_entities) == 1
     assert function_entities[0]["id"] == "python:function:demo.Outer.Inner.method"
@@ -83,7 +83,7 @@ def test_syntax_error_emits_degraded_module_entity_and_logs_to_stderr(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """UQ-WP3-02 + B.2 Q1: SyntaxError files now emit a degraded module entity (was: empty list)."""
-    result = extract("def :", "broken.py")
+    result, _ = extract("def :", "broken.py")
     assert len(result) == 1
     assert result[0]["kind"] == "module"
     assert result[0].get("parse_status") == "syntax_error"
@@ -93,7 +93,7 @@ def test_syntax_error_emits_degraded_module_entity_and_logs_to_stderr(
 
 def test_src_prefix_stripped() -> None:
     """UQ-WP3-05: `src/pkg/module.py` → dotted module `pkg.module`."""
-    entities = extract("def hello():\n    pass\n", "src/pkg/module.py")
+    entities, _ = extract("def hello():\n    pass\n", "src/pkg/module.py")
     fn = next(e for e in entities if e["kind"] == "function")
     assert fn["qualified_name"] == "pkg.module.hello"
 
@@ -104,7 +104,7 @@ def test_init_py_collapsed_to_package_name() -> None:
     ``source.file_path`` stays as the literal file path; the dotted module
     used for qualified_name is the package name only.
     """
-    entities = extract("def pkg_helper():\n    pass\n", "pkg/__init__.py")
+    entities, _ = extract("def pkg_helper():\n    pass\n", "pkg/__init__.py")
     fn = next(e for e in entities if e["kind"] == "function")
     assert fn["qualified_name"] == "pkg.pkg_helper"
     assert fn["source"]["file_path"] == "pkg/__init__.py"
@@ -112,7 +112,7 @@ def test_init_py_collapsed_to_package_name() -> None:
 
 def test_module_prefix_path_decouples_file_path_and_dotted_prefix() -> None:
     """server passes absolute file_path + relativised module_prefix_path."""
-    entities = extract(
+    entities, _ = extract(
         "def hello():\n    pass\n",
         "/tmp/proj/demo.py",
         module_prefix_path="demo.py",
@@ -132,7 +132,7 @@ def test_module_dotted_name_helper() -> None:
 
 
 def test_source_range_end_fields_populated() -> None:
-    entities = extract("def f():\n    pass\n", "d.py")
+    entities, _ = extract("def f():\n    pass\n", "d.py")
     fn = next(e for e in entities if e["kind"] == "function")
     source_range = fn["source"]["source_range"]
     assert source_range["start_line"] == 1
@@ -165,7 +165,7 @@ def test_module_source_range_empty_string() -> None:
 
 def test_module_entity_emitted_for_every_call() -> None:
     """Q1: every analyze produces exactly one module entity."""
-    entities = extract("def hello():\n    pass\n", "demo.py")
+    entities, _ = extract("def hello():\n    pass\n", "demo.py")
     module_entities = [e for e in entities if e["kind"] == "module"]
     assert len(module_entities) == 1
     module = module_entities[0]
@@ -184,7 +184,7 @@ def test_module_entity_emitted_for_every_call() -> None:
 
 def test_module_entity_for_empty_file() -> None:
     """Q1: empty file produces one module entity (parse_status='ok' since ast.parse('') succeeds)."""
-    entities = extract("", "empty.py")
+    entities, _ = extract("", "empty.py")
     assert len(entities) == 1
     module = entities[0]
     assert module["kind"] == "module"
@@ -200,7 +200,7 @@ def test_module_entity_for_empty_file() -> None:
 
 def test_module_entity_for_init_py_collapses_to_package() -> None:
     """`pkg/__init__.py` produces module entity at `python:module:pkg`."""
-    entities = extract("", "pkg/__init__.py")
+    entities, _ = extract("", "pkg/__init__.py")
     assert len(entities) == 1
     module = entities[0]
     assert module["id"] == "python:module:pkg"
@@ -211,7 +211,7 @@ def test_module_entity_for_syntax_error_file(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Q1: syntax-error file emits one module entity with parse_status='syntax_error'."""
-    entities = extract("def :", "broken.py")
+    entities, _ = extract("def :", "broken.py")
     assert len(entities) == 1, "syntax-error file emits only the module entity"
     module = entities[0]
     assert module["kind"] == "module"
@@ -238,7 +238,7 @@ def test_top_level_init_py_skipped_with_stderr(
     Emitting an entity with empty qualified_name would crash the entity-ID
     assembler at crates/clarion-core/src/entity_id.rs:97-101.
     """
-    entities = extract("def helper():\n    pass\n", "__init__.py")
+    entities, _ = extract("def helper():\n    pass\n", "__init__.py")
     assert entities == []
     captured = capsys.readouterr()
     assert "__init__.py" in captured.err
@@ -247,7 +247,7 @@ def test_top_level_init_py_skipped_with_stderr(
 
 def test_class_entity_simple() -> None:
     """`class Foo: pass` → one class entity + one module entity."""
-    entities = extract("class Foo:\n    pass\n", "demo.py")
+    entities, _ = extract("class Foo:\n    pass\n", "demo.py")
     class_entities = [e for e in entities if e["kind"] == "class"]
     assert len(class_entities) == 1
     cls = class_entities[0]
@@ -266,7 +266,7 @@ def test_class_entity_simple() -> None:
 
 def test_class_entity_nested() -> None:
     """`class A: class B: pass` → two class entities (A, A.B) + one module entity."""
-    entities = extract("class A:\n    class B:\n        pass\n", "demo.py")
+    entities, _ = extract("class A:\n    class B:\n        pass\n", "demo.py")
     class_ids = {e["id"] for e in entities if e["kind"] == "class"}
     assert class_ids == {
         "python:class:demo.A",
@@ -276,7 +276,7 @@ def test_class_entity_nested() -> None:
 
 def test_class_in_function_qualname() -> None:
     """`def f(): class C: pass` → class entity at f.<locals>.C (function-parent gets <locals>)."""
-    entities = extract("def f():\n    class C:\n        pass\n", "demo.py")
+    entities, _ = extract("def f():\n    class C:\n        pass\n", "demo.py")
     class_ids = {e["id"] for e in entities if e["kind"] == "class"}
     function_ids = {e["id"] for e in entities if e["kind"] == "function"}
     assert class_ids == {"python:class:demo.f.<locals>.C"}
@@ -285,7 +285,7 @@ def test_class_in_function_qualname() -> None:
 
 def test_class_method_emitted_as_function() -> None:
     """Class methods continue as function-kind (no separate method kind)."""
-    entities = extract(
+    entities, _ = extract(
         "class Foo:\n    def bar(self):\n        pass\n",
         "demo.py",
     )
@@ -297,7 +297,7 @@ def test_class_method_emitted_as_function() -> None:
 
 def test_async_class_method() -> None:
     """`async def` inside a class still emits as function-kind."""
-    entities = extract(
+    entities, _ = extract(
         "class Foo:\n    async def bar(self):\n        pass\n",
         "demo.py",
     )
@@ -311,10 +311,107 @@ def test_class_source_range_uses_ast_data_not_module_sentinel() -> None:
 
     For `class A:\\n    pass\\n`, end_lineno is 2 and end_col_offset > 0.
     """
-    entities = extract("class A:\n    pass\n", "demo.py")
+    entities, _ = extract("class A:\n    pass\n", "demo.py")
     cls = next(e for e in entities if e["kind"] == "class")
     sr = cls["source"]["source_range"]
     # Class body extends past the header line.
     assert sr["end_line"] == 2
     # Real column data, not the module sentinel 0.
     assert sr["end_col"] > 0
+
+
+# ── B.3 contains-edge + parent_id tests ─────────────────────────────────────
+
+
+def test_module_emits_no_parent_id() -> None:
+    """B.3 Q2: module entities have no parent_id (NotRequired absent in JSON)."""
+    entities, _ = extract("", "demo.py")
+    module = next(e for e in entities if e["kind"] == "module")
+    assert "parent_id" not in module
+
+
+def test_top_level_function_has_module_parent_id_and_contains_edge() -> None:
+    """B.3 Q3: top-level function gets parent_id=module and a contains edge."""
+    entities, edges = extract("def hello():\n    pass\n", "demo.py")
+    module = next(e for e in entities if e["kind"] == "module")
+    fn = next(e for e in entities if e["kind"] == "function")
+    assert fn["parent_id"] == module["id"]
+    assert {
+        "kind": "contains",
+        "from_id": module["id"],
+        "to_id": fn["id"],
+    } in edges
+
+
+def test_class_method_has_class_parent_id_and_contains_edge() -> None:
+    """B.3 Q3: method's parent is the enclosing class, not the module."""
+    entities, edges = extract("class Foo:\n    def bar(self):\n        pass\n", "demo.py")
+    cls = next(e for e in entities if e["kind"] == "class")
+    method = next(e for e in entities if e["kind"] == "function")
+    assert method["parent_id"] == cls["id"]
+    assert {
+        "kind": "contains",
+        "from_id": cls["id"],
+        "to_id": method["id"],
+    } in edges
+
+
+def test_nested_class_emits_two_contains_edges() -> None:
+    """B.3 Q3: `class A: class B: pass` emits (module → A) AND (A → A.B)."""
+    entities, edges = extract("class A:\n    class B:\n        pass\n", "demo.py")
+    module = next(e for e in entities if e["kind"] == "module")
+    outer = next(e for e in entities if e["qualified_name"] == "demo.A")
+    inner = next(e for e in entities if e["qualified_name"] == "demo.A.B")
+    assert outer["parent_id"] == module["id"]
+    assert inner["parent_id"] == outer["id"]
+    assert {"kind": "contains", "from_id": module["id"], "to_id": outer["id"]} in edges
+    assert {"kind": "contains", "from_id": outer["id"], "to_id": inner["id"]} in edges
+
+
+def test_function_in_function_emits_contains_edge_with_locals_qualname() -> None:
+    """B.3 Q3: nested function carries <locals> in qualname; contains edge anchors to parent function."""
+    entities, edges = extract("def f():\n    def g():\n        pass\n", "demo.py")
+    outer = next(e for e in entities if e["qualified_name"] == "demo.f")
+    inner = next(e for e in entities if e["qualified_name"] == "demo.f.<locals>.g")
+    assert inner["parent_id"] == outer["id"]
+    assert {"kind": "contains", "from_id": outer["id"], "to_id": inner["id"]} in edges
+
+
+def test_class_in_function_emits_contains_edge() -> None:
+    """B.3 Q3: class inside function — qualname carries <locals>; contains edge anchors to function."""
+    entities, edges = extract("def f():\n    class C:\n        pass\n", "demo.py")
+    outer = next(e for e in entities if e["qualified_name"] == "demo.f")
+    inner = next(e for e in entities if e["qualified_name"] == "demo.f.<locals>.C")
+    assert inner["parent_id"] == outer["id"]
+    assert {"kind": "contains", "from_id": outer["id"], "to_id": inner["id"]} in edges
+
+
+def test_contains_edge_has_no_source_range_fields() -> None:
+    """B.3 Q5 / ADR-026 decision 3: contains edges MUST omit source_byte_start/end."""
+    _, edges = extract("def hello():\n    pass\n", "demo.py")
+    assert len(edges) == 1
+    edge = edges[0]
+    assert edge["kind"] == "contains"
+    assert "source_byte_start" not in edge
+    assert "source_byte_end" not in edge
+
+
+def test_every_non_module_entity_has_matching_contains_edge() -> None:
+    """B.3 §5 parent-id/contains consistency: every entity with parent_id has a matching edge."""
+    source = (
+        "def f():\n"
+        "    def g():\n"
+        "        pass\n"
+        "class A:\n"
+        "    def m(self):\n"
+        "        pass\n"
+        "    class B:\n"
+        "        pass\n"
+    )
+    entities, edges = extract(source, "demo.py")
+    edge_pairs = {(e["from_id"], e["to_id"]) for e in edges if e["kind"] == "contains"}
+    for entity in entities:
+        if entity["kind"] == "module":
+            continue
+        pair = (entity["parent_id"], entity["id"])
+        assert pair in edge_pairs, f"missing contains edge for {entity['id']}"
