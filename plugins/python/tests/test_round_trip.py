@@ -113,6 +113,7 @@ def test_round_trip_self_analysis() -> None:  # noqa: PLR0915 - by-kind invarian
         assert response["id"] == 2
 
         entities = response["result"]["entities"]
+        edges = response["result"]["edges"]
         function_entities = [e for e in entities if e["kind"] == "function"]
         module_entities = [e for e in entities if e["kind"] == "module"]
         class_entities = [e for e in entities if e["kind"] == "class"]
@@ -152,6 +153,30 @@ def test_round_trip_self_analysis() -> None:  # noqa: PLR0915 - by-kind invarian
         # (project_root relativisation only affects the qualified_name prefix).
         for entity in entities:
             assert entity["source"]["file_path"] == str(target)
+
+        # B.3 contains-edge round-trip (Task 7).
+        # Every non-module entity declares parent_id; every contains edge
+        # in the response matches some entity's parent_id (dual-encoding
+        # invariant, ADR-026 decision 2). The plugin only emits contains
+        # edges in B.3; assert kind uniformity.
+        assert edges, "extractor.py must produce contains edges (non-empty file)"
+        contains_pairs = {(e["from_id"], e["to_id"]) for e in edges if e["kind"] == "contains"}
+        for edge in edges:
+            assert edge["kind"] == "contains", (
+                f"B.3 emits only contains edges; got {edge['kind']!r}"
+            )
+            # Contains edges MUST NOT carry source range fields (ADR-026 §3).
+            assert "source_byte_start" not in edge
+            assert "source_byte_end" not in edge
+        for entity in entities:
+            if entity["kind"] == "module":
+                assert "parent_id" not in entity, (
+                    "module entity must have no parent_id within the file"
+                )
+                continue
+            assert "parent_id" in entity, f"non-module entity {entity['id']} missing parent_id"
+            pair = (entity["parent_id"], entity["id"])
+            assert pair in contains_pairs, f"no contains edge matches parent_id for {entity['id']}"
 
         # Graceful shutdown.
         proc.stdin.write(

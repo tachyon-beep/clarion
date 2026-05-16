@@ -78,4 +78,26 @@ if [ "$RESULT" != "$EXPECTED" ]; then
     fail "expected exactly:\n$EXPECTED\ngot:\n$RESULT"
 fi
 
-log "PASS: walking skeleton persisted module + function entities"
+# ── 8. Verify contains edge via sqlite3 (B.3) ────────────────────────────────
+log "verifying persisted contains edge via sqlite3 ..."
+EDGE_RESULT=$(sqlite3 "$DEMO_DIR/.clarion/clarion.db" \
+    "select kind, from_id, to_id from edges order by from_id, to_id;")
+EDGE_EXPECTED="contains|python:module:demo|python:function:demo.hello"
+
+if [ "$EDGE_RESULT" != "$EDGE_EXPECTED" ]; then
+    log "DB edge contents:"
+    sqlite3 "$DEMO_DIR/.clarion/clarion.db" "select * from edges;" >&2 || true
+    fail "expected edge row:\n$EDGE_EXPECTED\ngot:\n$EDGE_RESULT"
+fi
+
+# ── 9. Verify run stats include edges_inserted == 1 (B.3 §6) ─────────────────
+log "verifying run stats include edges_inserted == 1 ..."
+EDGES_INSERTED=$(sqlite3 "$DEMO_DIR/.clarion/clarion.db" \
+    "select json_extract(stats, '\$.edges_inserted') from runs where status = 'completed';")
+if [ "$EDGES_INSERTED" != "1" ]; then
+    log "runs row:"
+    sqlite3 "$DEMO_DIR/.clarion/clarion.db" "select id, status, stats from runs;" >&2 || true
+    fail "expected runs.stats.edges_inserted == 1; got $EDGES_INSERTED"
+fi
+
+log "PASS: walking skeleton persisted module + function entities + contains edge"
