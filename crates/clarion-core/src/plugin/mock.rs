@@ -508,7 +508,10 @@ impl MockPlugin {
                 })]
             }
         };
-        let result = AnalyzeFileResult { entities };
+        let result = AnalyzeFileResult {
+            entities,
+            edges: vec![],
+        };
         let env = ResponseEnvelope {
             jsonrpc: JsonRpcVersion,
             id,

@@ -325,15 +325,24 @@ pub struct AnalyzeFileParams {
 
 /// Result for `analyze_file` (plugin → core).
 ///
-/// `entities` is `Vec<serde_json::Value>` as a Sprint 1 placeholder.
-/// Task 6 (ontology boundary enforcement) will introduce a typed `Entity`
-/// struct and replace this field. The `Vec<Value>` shape matches the wire
-/// contract without requiring Task 2 to know the entity schema.
+/// `entities` is `Vec<serde_json::Value>` as a Sprint 1 placeholder; per-element
+/// deserialisation into `RawEntity` happens in `plugin::host::analyze_file`,
+/// so a single malformed entity drops with a finding rather than failing the
+/// whole response. B.3 added `edges` under the same per-element pattern.
+///
+/// `edges` defaults to empty for Sprint-1 plugins that pre-date B.3 — the
+/// `#[serde(default)]` makes the new field non-breaking on the wire.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AnalyzeFileResult {
     /// Extracted entities. Element shape is the plugin's concern; the core
     /// stores them opaquely until Task 6 introduces the typed ontology layer.
     pub entities: Vec<Value>,
+    /// Edges emitted by the plugin (B.3, ADR-026). Per-element
+    /// deserialisation into `plugin::host::RawEdge` happens in the host;
+    /// malformed edges drop with a finding. `serde(default)` keeps the
+    /// addition non-breaking for Sprint-1 plugins.
+    #[serde(default)]
+    pub edges: Vec<Value>,
 }
 
 // ── shutdown ──────────────────────────────────────────────────────────────────
@@ -569,10 +578,25 @@ mod tests {
         // analyze_file result
         let r = AnalyzeFileResult {
             entities: vec![serde_json::json!({"kind": "function", "name": "main"})],
+            edges: vec![serde_json::json!({
+                "kind": "contains",
+                "from_id": "python:module:m",
+                "to_id": "python:function:m.main",
+            })],
         };
         let back: AnalyzeFileResult =
             serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(r, back);
+
+        // analyze_file result with omitted `edges` field (Sprint-1 plugins
+        // pre-date B.3); serde(default) means it deserialises to empty.
+        let pre_b3 = r#"{"entities": []}"#;
+        let back: AnalyzeFileResult =
+            serde_json::from_str(pre_b3).expect("pre-B.3 wire shape must remain accepted");
+        assert!(
+            back.edges.is_empty(),
+            "missing edges field must default to empty vec"
+        );
 
         // shutdown params (empty)
         let p = ShutdownParams {};

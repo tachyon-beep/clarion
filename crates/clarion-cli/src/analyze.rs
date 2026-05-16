@@ -17,12 +17,12 @@ use anyhow::{Context, Result, bail};
 use uuid::Uuid;
 
 use clarion_core::{
-    AcceptedEntity, CrashLoopBreaker, CrashLoopState, DiscoveredPlugin,
-    FINDING_DISABLED_CRASH_LOOP, HostError, HostFinding, discover,
+    AcceptedEdge, AcceptedEntity, AnalyzeFileOutcome, CrashLoopBreaker, CrashLoopState,
+    DiscoveredPlugin, FINDING_DISABLED_CRASH_LOOP, HostError, HostFinding, discover,
 };
 use clarion_storage::{
     DEFAULT_BATCH_SIZE, DEFAULT_CHANNEL_CAPACITY, Writer,
-    commands::{EntityRecord, RunStatus, WriterCmd},
+    commands::{EdgeRecord, EntityRecord, RunStatus, WriterCmd},
 };
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -180,6 +180,7 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
     // Writer-actor errors (InsertEntity rejected) ARE run-fatal: the DB
     // layer is unusable for the rest of this run.
     let mut total_entity_count: u64 = 0;
+    let mut total_edge_count: u64 = 0;
     let mut run_outcome: RunOutcome = RunOutcome::Completed;
     let mut breaker = CrashLoopBreaker::default();
     let mut crash_reasons: Vec<String> = Vec::new();
@@ -266,7 +267,11 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                 // Fall through to the next iteration — nothing else to do
                 // for a crashed plugin, and there's no code after the match.
             }
-            Ok(BatchResult { entities, findings }) => {
+            Ok(BatchResult {
+                entities,
+                edges,
+                findings,
+            }) => {
                 // Log findings individually (Tier B persistence is future
                 // work). Logging only the count leaves operators guessing
                 // whether the plugin tripped an ontology check, emitted
@@ -288,14 +293,17 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                     }
                 }
 
-                // Persist entities via writer-actor (async side).
+                // Persist entities + edges via writer-actor (async side).
                 //
-                // A writer-actor error here (e.g. unique-key constraint, disk full)
-                // must NOT short-circuit `run()` via `?` — that would bypass the
-                // CommitRun/FailRun block below and leave `runs.status = 'running'`
-                // permanently. Instead we convert the error to a terminal
-                // `RunOutcome::Failed` so the FailRun path marks the run.
-                let count = entities.len() as u64;
+                // A writer-actor error here (per-kind contract violation,
+                // unique-key constraint, disk full) must NOT short-circuit
+                // `run()` via `?` — that would bypass the CommitRun/FailRun
+                // block below and leave `runs.status = 'running'` permanently.
+                // Convert to a terminal `RunOutcome::HardFailed` so FailRun
+                // marks the run. Entities are inserted before edges so the
+                // edge FK references resolve at insert time (B.3 §5).
+                let entity_count = entities.len() as u64;
+                let edge_count = edges.len() as u64;
                 let mut insert_err: Option<anyhow::Error> = None;
                 for (id_str, record) in entities {
                     let res = writer
@@ -311,19 +319,40 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                         break;
                     }
                 }
+                if insert_err.is_none() {
+                    for (descr, record) in edges {
+                        let res = writer
+                            .send_wait(|ack| WriterCmd::InsertEdge {
+                                edge: Box::new(record),
+                                ack,
+                            })
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{e}"))
+                            .with_context(|| format!("InsertEdge {descr}"));
+                        if let Err(e) = res {
+                            insert_err = Some(e);
+                            break;
+                        }
+                    }
+                }
                 if let Some(e) = insert_err {
                     tracing::error!(
                         plugin_id = %plugin_id,
                         error = %e,
-                        "writer-actor rejected InsertEntity; failing run"
+                        "writer-actor rejected insert; failing run"
                     );
                     run_outcome = RunOutcome::HardFailed {
                         reason: format!("{e:#}"),
                     };
                     break 'plugins;
                 }
-                total_entity_count += count;
-                tracing::info!(plugin_id = %plugin_id, entity_count = count, "plugin complete");
+                total_entity_count += entity_count;
+                total_edge_count += edge_count;
+                tracing::info!(
+                    plugin_id = %plugin_id,
+                    entity_count, edge_count,
+                    "plugin complete",
+                );
             }
         }
     }
@@ -356,7 +385,11 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
 
     match run_outcome {
         RunOutcome::Completed => {
-            let stats_json = format!(r#"{{"entities_inserted":{total_entity_count}}}"#);
+            let stats_json = serde_json::json!({
+                "entities_inserted": total_entity_count,
+                "edges_inserted": total_edge_count,
+            })
+            .to_string();
             writer
                 .send_wait(|ack| WriterCmd::CommitRun {
                     run_id: run_id.clone(),
@@ -376,6 +409,7 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
             // was persisted alongside the failure reason.
             let stats_json = serde_json::json!({
                 "entities_inserted": total_entity_count,
+                "edges_inserted": total_edge_count,
                 "failure_reason": reason,
             })
             .to_string();
@@ -418,7 +452,10 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
         bail!("analyze run {run_id} failed — {reason}");
     }
 
-    println!("analyze complete: run {run_id} completed ({total_entity_count} entities)");
+    println!(
+        "analyze complete: run {run_id} completed \
+         ({total_entity_count} entities, {total_edge_count} edges)"
+    );
     Ok(())
 }
 
@@ -477,9 +514,14 @@ fn handle_plugin_task_join_result(
 struct BatchResult {
     /// `(entity_id_string, record)` pairs for every accepted entity.
     entities: Vec<(String, EntityRecord)>,
+    /// `(descriptor, record)` pairs for every accepted edge — descriptor is
+    /// `"(kind from_id -> to_id)"` for diagnostic messages on insert failure.
+    edges: Vec<(String, EdgeRecord)>,
     /// Findings accumulated by the host during the session.
     findings: Vec<clarion_core::HostFinding>,
 }
+
+type Collected = (Vec<(String, EntityRecord)>, Vec<(String, EdgeRecord)>);
 
 /// Spawn the plugin, handshake, run `analyze_file` for each file, collect results.
 ///
@@ -509,19 +551,30 @@ fn run_plugin_blocking(
             other => format!("plugin {plugin_id} spawn/handshake error: {other}"),
         })?;
 
-    let work_result: Result<Vec<(String, EntityRecord)>, String> = (|| {
-        let mut collected: Vec<(String, EntityRecord)> = Vec::new();
+    let work_result: Result<Collected, String> = (|| {
+        let mut collected_entities: Vec<(String, EntityRecord)> = Vec::new();
+        let mut collected_edges: Vec<(String, EdgeRecord)> = Vec::new();
         for file in files {
-            let entities: Vec<AcceptedEntity> = host
+            let AnalyzeFileOutcome { entities, edges } = host
                 .analyze_file(file)
                 .map_err(|e| classify_host_error(plugin_id, e))?;
-            for entity in entities {
+            for entity in &entities {
                 let id_str = entity.id.to_string();
-                let record = map_entity_to_record(&entity, plugin_id);
-                collected.push((id_str, record));
+                let record = map_entity_to_record(entity, plugin_id);
+                collected_entities.push((id_str, record));
+            }
+            for edge in edges {
+                let descr = format!(
+                    "({kind} {from} -> {to})",
+                    kind = edge.kind,
+                    from = edge.from_id,
+                    to = edge.to_id,
+                );
+                let record = map_edge_to_record(edge);
+                collected_edges.push((descr, record));
             }
         }
-        Ok(collected)
+        Ok((collected_entities, collected_edges))
     })();
 
     // Try a graceful shutdown on the happy path; on error, skip straight to
@@ -548,8 +601,9 @@ fn run_plugin_blocking(
     reap_and_classify_exit(&mut child, plugin_id, &mut findings);
 
     match work_result {
-        Ok(collected) => Ok(BatchResult {
-            entities: collected,
+        Ok((entities, edges)) => Ok(BatchResult {
+            entities,
+            edges,
             findings,
         }),
         Err(reason) => Err(reason),
@@ -660,7 +714,7 @@ fn map_entity_to_record(entity: &AcceptedEntity, plugin_id: &str) -> EntityRecor
         kind: entity.kind.clone(),
         name: entity.qualified_name.clone(),
         short_name,
-        parent_id: None,
+        parent_id: entity.raw.parent_id.clone(),
         source_file_id: None,
         source_byte_start: None,
         source_byte_end: None,
@@ -674,6 +728,24 @@ fn map_entity_to_record(entity: &AcceptedEntity, plugin_id: &str) -> EntityRecor
         last_seen_commit: None,
         created_at: now.clone(),
         updated_at: now,
+    }
+}
+
+/// Map an `AcceptedEdge` to an `EdgeRecord` for the writer-actor (B.3).
+fn map_edge_to_record(edge: AcceptedEdge) -> EdgeRecord {
+    let properties_json = edge
+        .raw
+        .properties
+        .as_ref()
+        .and_then(|v| serde_json::to_string(v).ok());
+    EdgeRecord {
+        kind: edge.kind,
+        from_id: edge.from_id,
+        to_id: edge.to_id,
+        properties_json,
+        source_file_id: edge.source_file_id,
+        source_byte_start: edge.raw.source_byte_start,
+        source_byte_end: edge.raw.source_byte_end,
     }
 }
 
@@ -862,6 +934,7 @@ mod tests {
     fn handle_task_passes_through_ok_ok() {
         let br = BatchResult {
             entities: Vec::new(),
+            edges: Vec::new(),
             findings: Vec::new(),
         };
         let out = handle_plugin_task_join_result(Ok(Ok(br)), "python");

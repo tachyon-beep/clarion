@@ -14,7 +14,9 @@ pub use entity_id::{EntityId, EntityIdError, entity_id};
 pub use llm_provider::{LlmProvider, NoopProvider};
 pub use plugin::{
     // host (Task 6) — facade for callers that spawn/connect plugins
+    AcceptedEdge,
     AcceptedEntity,
+    AnalyzeFileOutcome,
     CapExceeded,
     // breaker (Task 7) — callers drive crash-loop accounting
     CrashLoopBreaker,

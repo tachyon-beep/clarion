@@ -23,7 +23,10 @@ pub mod transport;
 
 pub use breaker::{CrashLoopBreaker, CrashLoopState, FINDING_DISABLED_CRASH_LOOP};
 pub use discovery::{DiscoveredPlugin, DiscoveryError, discover, discover_on_path};
-pub use host::{AcceptedEntity, HostError, HostFinding, PluginHost};
+pub use host::{
+    AcceptedEdge, AcceptedEntity, AnalyzeFileOutcome, HostError, HostFinding, PluginHost, RawEdge,
+    RawEntity,
+};
 pub use jail::{JailError, jail, jail_to_string};
 pub use limits::{
     BreakerState, CapExceeded, ContentLengthCeiling, DEFAULT_MAX_NOFILE, DEFAULT_MAX_NPROC,

@@ -101,6 +101,7 @@ fn main() {
                 });
                 let result = AnalyzeFileResult {
                     entities: vec![entity],
+                    edges: vec![],
                 };
                 send_result(&mut writer, id, serde_json::to_value(result).unwrap());
             }
