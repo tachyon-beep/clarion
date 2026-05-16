@@ -5,9 +5,9 @@
 //! commands via a bounded `mpsc::Sender<WriterCmd>`. Each variant carries
 //! a `oneshot::Sender` for the per-command ack (UQ-WP1-03 resolution).
 //!
-//! Sprint 1 ships four variants: `BeginRun`, `InsertEntity`, `CommitRun`,
-//! `FailRun`. Later WPs add `InsertEdge`, `InsertFinding`, etc. by appending
-//! variants — the pattern is frozen here.
+//! Sprint 1 shipped four variants: `BeginRun`, `InsertEntity`, `CommitRun`,
+//! `FailRun`. B.3 adds `InsertEdge` (ADR-026). Later WPs add `InsertFinding`,
+//! etc. by appending variants — the pattern is frozen here.
 
 use tokio::sync::oneshot;
 
@@ -65,6 +65,25 @@ pub struct EntityRecord {
     pub updated_at: String,
 }
 
+/// Plain-old-data edge record as seen by the writer. Per ADR-026 the
+/// natural key is `(kind, from_id, to_id)`. `source_byte_start`/`end` are
+/// kind-dispatched (NULL for structural edges like `contains`; required for
+/// AST-anchored edges like `calls`); the writer enforces the per-kind
+/// contract on `InsertEdge`.
+#[derive(Debug, Clone)]
+pub struct EdgeRecord {
+    pub kind: String,
+    pub from_id: String,
+    pub to_id: String,
+    /// JSON string; writer inserts verbatim. None ⇒ NULL.
+    pub properties_json: Option<String>,
+    /// Module entity id for the file the edge was emitted from. Derived by
+    /// the host, not the plugin (ADR-022 boundary).
+    pub source_file_id: Option<String>,
+    pub source_byte_start: Option<i64>,
+    pub source_byte_end: Option<i64>,
+}
+
 /// All writer operations as a single enum so the actor loop exhausts
 /// everything via one match.
 #[derive(Debug)]
@@ -78,12 +97,18 @@ pub enum WriterCmd {
         started_at: String,
         ack: Ack<()>,
     },
-    /// Insert an entity; also advances the per-batch insert counter and
+    /// Insert an entity; also advances the per-batch write counter and
     /// commits the in-flight transaction if the batch boundary is crossed.
     InsertEntity {
         entity: Box<EntityRecord>,
         ack: Ack<()>,
     },
+    /// Insert an edge under the natural PK `(kind, from_id, to_id)`. The
+    /// writer enforces the per-kind source-range contract (ADR-026) and
+    /// silently dedupes UNIQUE conflicts via `INSERT OR IGNORE`, incrementing
+    /// `Writer::dropped_edges_total` on dedupe. Also advances the per-batch
+    /// write counter — edges and entities share one batch boundary.
+    InsertEdge { edge: Box<EdgeRecord>, ack: Ack<()> },
     /// Commit the in-flight transaction, update the run row to the given
     /// terminal status + `completed_at` + `stats_json`, and clear per-run
     /// state.

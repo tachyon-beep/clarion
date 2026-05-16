@@ -11,7 +11,7 @@ pub mod reader;
 pub mod schema;
 pub mod writer;
 
-pub use commands::{EntityRecord, RunStatus, WriterCmd};
+pub use commands::{EdgeRecord, EntityRecord, RunStatus, WriterCmd};
 pub use error::{Result, StorageError};
 pub use reader::ReaderPool;
 pub use writer::{DEFAULT_BATCH_SIZE, DEFAULT_CHANNEL_CAPACITY, Writer};
