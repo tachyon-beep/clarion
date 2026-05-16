@@ -100,4 +100,14 @@ if [ "$EDGES_INSERTED" != "1" ]; then
     fail "expected runs.stats.edges_inserted == 1; got $EDGES_INSERTED"
 fi
 
+# ── 10. Verify dropped_edges_total == 0 (B.3 §6 / §9 exit criterion 6) ───────
+log "verifying run stats include dropped_edges_total == 0 ..."
+DROPPED=$(sqlite3 "$DEMO_DIR/.clarion/clarion.db" \
+    "select json_extract(stats, '\$.dropped_edges_total') from runs where status = 'completed';")
+if [ "$DROPPED" != "0" ]; then
+    log "runs row:"
+    sqlite3 "$DEMO_DIR/.clarion/clarion.db" "select id, status, stats from runs;" >&2 || true
+    fail "expected runs.stats.dropped_edges_total == 0; got $DROPPED"
+fi
+
 log "PASS: walking skeleton persisted module + function entities + contains edge"

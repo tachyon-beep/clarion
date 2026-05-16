@@ -375,6 +375,12 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
     }
 
     let completed_at = iso8601_now();
+    // Snapshot the writer's process-lifetime dropped-edges counter so the
+    // run's durable stats record the dedupe count (B.3 §6). Read BEFORE
+    // CommitRun so the value reflects exactly this run's inserts.
+    let dropped_edges_total = writer
+        .dropped_edges_total
+        .load(std::sync::atomic::Ordering::Relaxed) as u64;
     // Extract the failure reason (if any) before the match consumes run_outcome.
     let fail_reason: Option<String> = match &run_outcome {
         RunOutcome::SoftFailed { reason } | RunOutcome::HardFailed { reason } => {
@@ -388,6 +394,7 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
             let stats_json = serde_json::json!({
                 "entities_inserted": total_entity_count,
                 "edges_inserted": total_edge_count,
+                "dropped_edges_total": dropped_edges_total,
             })
             .to_string();
             writer
@@ -410,6 +417,7 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
             let stats_json = serde_json::json!({
                 "entities_inserted": total_entity_count,
                 "edges_inserted": total_edge_count,
+                "dropped_edges_total": dropped_edges_total,
                 "failure_reason": reason,
             })
             .to_string();
