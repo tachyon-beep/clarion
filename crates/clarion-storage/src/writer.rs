@@ -19,7 +19,7 @@ use rusqlite::{Connection, params};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::commands::{Ack, EdgeRecord, EntityRecord, RunStatus, WriterCmd};
+use crate::commands::{Ack, EdgeConfidence, EdgeRecord, EntityRecord, RunStatus, WriterCmd};
 use crate::error::{Result, StorageError};
 use crate::pragma;
 
@@ -40,13 +40,16 @@ pub struct Writer {
     /// Read this field before dropping the [`Writer`]: the actor holds its
     /// own `Arc` clone that lives until the `JoinHandle` resolves.
     pub commits_observed: Arc<AtomicUsize>,
-    /// Process-lifetime count of edges silently deduped by the writer.
+    /// Process-lifetime count of edges silently deduped or rejected by the writer.
     ///
     /// `InsertEdge` uses `INSERT OR IGNORE`; a UNIQUE conflict on
     /// `(kind, from_id, to_id)` increments this counter. Walking-skeleton
-    /// e2e asserts this is zero post-analyze (B.3 §6). Per-kind contract
-    /// violations and parent-id mismatches are hard rejects, NOT counted here.
+    /// e2e asserts this is zero post-analyze (B.3 §6). B.4* extends the
+    /// counter to per-kind contract rejections so malformed plugin edges are
+    /// visible in the same run stat.
     pub dropped_edges_total: Arc<AtomicUsize>,
+    /// Process-lifetime count of accepted ambiguous-confidence edges.
+    pub ambiguous_edges_total: Arc<AtomicUsize>,
 }
 
 impl Writer {
@@ -68,8 +71,10 @@ impl Writer {
         let (tx, rx) = mpsc::channel(channel_capacity);
         let commits_observed = Arc::new(AtomicUsize::new(0));
         let dropped_edges_total = Arc::new(AtomicUsize::new(0));
+        let ambiguous_edges_total = Arc::new(AtomicUsize::new(0));
         let commits_for_actor = commits_observed.clone();
         let dropped_for_actor = dropped_edges_total.clone();
+        let ambiguous_for_actor = ambiguous_edges_total.clone();
         let handle = tokio::task::spawn_blocking(move || -> Result<()> {
             let mut conn = Connection::open(&db_path)?;
             pragma::apply_write_pragmas(&conn)?;
@@ -79,6 +84,7 @@ impl Writer {
                 batch_size,
                 &commits_for_actor,
                 &dropped_for_actor,
+                &ambiguous_for_actor,
             );
             Ok(())
         });
@@ -87,6 +93,7 @@ impl Writer {
                 tx,
                 commits_observed,
                 dropped_edges_total,
+                ambiguous_edges_total,
             },
             handle,
         ))
@@ -130,6 +137,7 @@ fn run_actor(
     batch_size: usize,
     commits_observed: &AtomicUsize,
     dropped_edges_total: &AtomicUsize,
+    ambiguous_edges_total: &AtomicUsize,
 ) {
     let mut state = ActorState::new(batch_size);
 
@@ -157,6 +165,7 @@ fn run_actor(
                     &edge,
                     commits_observed,
                     dropped_edges_total,
+                    ambiguous_edges_total,
                 );
                 reply(ack, res);
             }
@@ -334,15 +343,28 @@ fn insert_entity(
 const STRUCTURAL_EDGE_KINDS: &[&str] = &["contains", "in_subsystem", "guides", "emits_finding"];
 const ANCHORED_EDGE_KINDS: &[&str] = &["calls", "imports", "decorates", "inherits_from"];
 
-/// Enforce the per-kind source-range contract documented in
+/// Enforce the per-kind confidence + source-range contract documented in
 /// `docs/implementation/sprint-2/b3-contains-edges.md` §3 Q5 and ADR-026
-/// decision 3. Returns a [`StorageError::WriterProtocol`] whose message
-/// embeds `CLA-INFRA-EDGE-SOURCE-RANGE-CONTRACT` (structural/anchored
-/// mismatch) or `CLA-INFRA-EDGE-UNKNOWN-KIND` (kind not in the ontology),
+/// decision 3, extended by ADR-028. Returns a
+/// [`StorageError::WriterProtocol`] whose message embeds
+/// `CLA-INFRA-EDGE-CONFIDENCE-CONTRACT` (per-kind confidence mismatch),
+/// `CLA-INFRA-EDGE-SOURCE-RANGE-CONTRACT` (structural/anchored mismatch), or
+/// `CLA-INFRA-EDGE-UNKNOWN-KIND` (kind not in the ontology),
 /// so the surrounding `runs.stats.failure_reason` carries the code.
 fn enforce_edge_contract(edge: &EdgeRecord) -> Result<()> {
     let has_range = edge.source_byte_start.is_some() || edge.source_byte_end.is_some();
     if STRUCTURAL_EDGE_KINDS.contains(&edge.kind.as_str()) {
+        if edge.confidence != EdgeConfidence::Resolved {
+            return Err(StorageError::WriterProtocol(format!(
+                "CLA-INFRA-EDGE-CONFIDENCE-CONTRACT: structural edge kind {kind:?} \
+                 MUST carry confidence=resolved; got confidence={confidence:?} \
+                 for ({from} -> {to})",
+                kind = edge.kind,
+                confidence = edge.confidence,
+                from = edge.from_id,
+                to = edge.to_id,
+            )));
+        }
         if has_range {
             return Err(StorageError::WriterProtocol(format!(
                 "CLA-INFRA-EDGE-SOURCE-RANGE-CONTRACT: edge kind {kind:?} \
@@ -356,6 +378,16 @@ fn enforce_edge_contract(edge: &EdgeRecord) -> Result<()> {
             )));
         }
     } else if ANCHORED_EDGE_KINDS.contains(&edge.kind.as_str()) {
+        if edge.confidence == EdgeConfidence::Inferred {
+            return Err(StorageError::WriterProtocol(format!(
+                "CLA-INFRA-EDGE-CONFIDENCE-CONTRACT: inferred-tier edges are \
+                 query-time-only at scan time; got confidence=inferred for \
+                 anchored edge kind {kind:?} ({from} -> {to})",
+                kind = edge.kind,
+                from = edge.from_id,
+                to = edge.to_id,
+            )));
+        }
         if !has_range {
             return Err(StorageError::WriterProtocol(format!(
                 "CLA-INFRA-EDGE-SOURCE-RANGE-CONTRACT: edge kind {kind:?} \
@@ -384,13 +416,17 @@ fn insert_edge(
     edge: &EdgeRecord,
     commits_observed: &AtomicUsize,
     dropped_edges_total: &AtomicUsize,
+    ambiguous_edges_total: &AtomicUsize,
 ) -> Result<()> {
     if state.current_run.is_none() {
         return Err(StorageError::WriterProtocol(
             "InsertEdge received without a preceding BeginRun".to_owned(),
         ));
     }
-    enforce_edge_contract(edge)?;
+    if let Err(err) = enforce_edge_contract(edge) {
+        dropped_edges_total.fetch_add(1, Ordering::Relaxed);
+        return Err(err);
+    }
     if !state.in_tx {
         conn.execute_batch("BEGIN")?;
         state.in_tx = true;
@@ -398,8 +434,8 @@ fn insert_edge(
     let changed = conn.execute(
         "INSERT OR IGNORE INTO edges ( \
             kind, from_id, to_id, properties, source_file_id, \
-            source_byte_start, source_byte_end \
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            source_byte_start, source_byte_end, confidence \
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             edge.kind,
             edge.from_id,
@@ -408,12 +444,15 @@ fn insert_edge(
             edge.source_file_id,
             edge.source_byte_start,
             edge.source_byte_end,
+            edge.confidence.as_str(),
         ],
     )?;
     if changed == 0 {
         // UNIQUE conflict on (kind, from_id, to_id) — silent dedupe is the
         // idempotent-re-analyze contract (B.3 §6).
         dropped_edges_total.fetch_add(1, Ordering::Relaxed);
+    } else if edge.confidence == EdgeConfidence::Ambiguous {
+        ambiguous_edges_total.fetch_add(1, Ordering::Relaxed);
     }
     bump_writes_and_maybe_commit(conn, state, commits_observed)?;
     Ok(())

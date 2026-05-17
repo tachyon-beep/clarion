@@ -386,6 +386,58 @@ fn migration_0001_creates_edge_confidence_index() {
 }
 
 #[test]
+fn edge_confidence_filter_uses_dispatch_index() {
+    // B.4* Q5: the B.6 traversal default filters by kind+confidence; assert
+    // SQLite chooses the purpose-built index rather than a table scan.
+    let tempdir = tempfile::tempdir().unwrap();
+    let conn = open_fresh(&tempdir);
+    conn.execute(
+        "INSERT INTO entities (id, plugin_id, kind, name, short_name, properties, \
+         created_at, updated_at) \
+         VALUES ('python:module:demo', 'python', 'module', 'demo', 'demo', '{}', \
+         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        [],
+    )
+    .unwrap();
+    for i in 0..200 {
+        let id = format!("python:function:demo.f{i:03}");
+        conn.execute(
+            "INSERT INTO entities (id, plugin_id, kind, name, short_name, parent_id, \
+             properties, created_at, updated_at) \
+             VALUES (?1, 'python', 'function', ?1, ?1, 'python:module:demo', '{}', \
+             strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![id],
+        )
+        .unwrap();
+    }
+    for i in 0..199 {
+        let confidence = if i % 2 == 0 { "resolved" } else { "ambiguous" };
+        let from_id = format!("python:function:demo.f{i:03}");
+        let to_id = format!("python:function:demo.f{:03}", i + 1);
+        conn.execute(
+            "INSERT INTO edges (kind, from_id, to_id, confidence, source_byte_start, source_byte_end) \
+             VALUES ('calls', ?1, ?2, ?3, 1, 2)",
+            params![from_id, to_id, confidence],
+        )
+        .unwrap();
+    }
+    conn.execute_batch("ANALYZE").unwrap();
+    let details: Vec<String> = conn
+        .prepare("EXPLAIN QUERY PLAN SELECT * FROM edges WHERE kind = ?1 AND confidence = ?2")
+        .unwrap()
+        .query_map(params!["calls", "resolved"], |row| row.get::<_, String>(3))
+        .unwrap()
+        .map(std::result::Result::unwrap)
+        .collect();
+    assert!(
+        details
+            .iter()
+            .any(|detail| detail.contains("ix_edges_kind_confidence")),
+        "expected ix_edges_kind_confidence in query plan; got {details:?}"
+    );
+}
+
+#[test]
 fn migrations_are_idempotent() {
     let tempdir = tempfile::tempdir().unwrap();
     let mut conn = open_fresh(&tempdir);

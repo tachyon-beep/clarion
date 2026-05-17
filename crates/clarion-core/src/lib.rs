@@ -24,6 +24,7 @@ pub use plugin::{
     // discovery (Task 5) — callers enumerate plugins
     DiscoveredPlugin,
     DiscoveryError,
+    EdgeConfidence,
     FINDING_DISABLED_CRASH_LOOP,
     HostError,
     HostFinding,

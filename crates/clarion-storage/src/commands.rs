@@ -11,6 +11,8 @@
 
 use tokio::sync::oneshot;
 
+pub use clarion_core::EdgeConfidence;
+
 use crate::error::StorageError;
 
 pub type Ack<T> = oneshot::Sender<Result<T, StorageError>>;
@@ -75,6 +77,7 @@ pub struct EdgeRecord {
     pub kind: String,
     pub from_id: String,
     pub to_id: String,
+    pub confidence: EdgeConfidence,
     /// JSON string; writer inserts verbatim. None ⇒ NULL.
     pub properties_json: Option<String>,
     /// Module entity id for the file the edge was emitted from. Derived by

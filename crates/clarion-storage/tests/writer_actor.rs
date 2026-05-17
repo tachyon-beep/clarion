@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 
 use clarion_storage::{
     ReaderPool, Writer,
-    commands::{EdgeRecord, EntityRecord, RunStatus, WriterCmd},
+    commands::{EdgeConfidence, EdgeRecord, EntityRecord, RunStatus, WriterCmd},
     pragma, schema,
 };
 
@@ -66,11 +66,106 @@ fn make_contains_edge(from_id: &str, to_id: &str) -> EdgeRecord {
         kind: "contains".to_owned(),
         from_id: from_id.to_owned(),
         to_id: to_id.to_owned(),
+        confidence: EdgeConfidence::Resolved,
         properties_json: None,
         source_file_id: Some(from_id.to_owned()),
         source_byte_start: None,
         source_byte_end: None,
     }
+}
+
+fn make_structural_edge(
+    kind: &str,
+    from_id: &str,
+    to_id: &str,
+    confidence: EdgeConfidence,
+) -> EdgeRecord {
+    EdgeRecord {
+        kind: kind.to_owned(),
+        from_id: from_id.to_owned(),
+        to_id: to_id.to_owned(),
+        confidence,
+        properties_json: None,
+        source_file_id: Some(from_id.to_owned()),
+        source_byte_start: None,
+        source_byte_end: None,
+    }
+}
+
+fn make_calls_edge(from_id: &str, to_id: &str, confidence: EdgeConfidence) -> EdgeRecord {
+    EdgeRecord {
+        kind: "calls".to_owned(),
+        from_id: from_id.to_owned(),
+        to_id: to_id.to_owned(),
+        confidence,
+        properties_json: None,
+        source_file_id: Some("python:module:demo".to_owned()),
+        source_byte_start: Some(10),
+        source_byte_end: Some(18),
+    }
+}
+
+async fn begin_demo_run(tx: &tokio::sync::mpsc::Sender<WriterCmd>, run_id: &str) {
+    send::<()>(tx, |ack| WriterCmd::BeginRun {
+        run_id: run_id.into(),
+        config_json: "{}".into(),
+        started_at: now_iso(),
+        ack,
+    })
+    .await
+    .unwrap();
+}
+
+async fn seed_module_and_functions(tx: &tokio::sync::mpsc::Sender<WriterCmd>) {
+    send::<()>(tx, |ack| WriterCmd::InsertEntity {
+        entity: Box::new(make_module_entity("python:module:demo")),
+        ack,
+    })
+    .await
+    .unwrap();
+    for id in ["python:function:demo.caller", "python:function:demo.callee"] {
+        send::<()>(tx, |ack| WriterCmd::InsertEntity {
+            entity: Box::new(make_entity_with_parent(id, Some("python:module:demo"))),
+            ack,
+        })
+        .await
+        .unwrap();
+    }
+}
+
+async fn seed_contains_edges_for_demo_functions(tx: &tokio::sync::mpsc::Sender<WriterCmd>) {
+    for id in ["python:function:demo.caller", "python:function:demo.callee"] {
+        send::<()>(tx, |ack| WriterCmd::InsertEdge {
+            edge: Box::new(make_contains_edge("python:module:demo", id)),
+            ack,
+        })
+        .await
+        .unwrap();
+    }
+}
+
+async fn assert_edge_rejected_with_counter(
+    writer: &Writer,
+    tx: &tokio::sync::mpsc::Sender<WriterCmd>,
+    edge: EdgeRecord,
+    expected_code: &str,
+) {
+    let result = send::<()>(tx, |ack| WriterCmd::InsertEdge {
+        edge: Box::new(edge),
+        ack,
+    })
+    .await;
+    let err = result.expect_err("edge should be rejected by writer contract");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains(expected_code),
+        "expected {expected_code} in error; got: {msg}"
+    );
+    assert_eq!(
+        writer.dropped_edges_total.load(Ordering::Relaxed),
+        1,
+        "contract rejection should increment dropped_edges_total"
+    );
 }
 
 async fn send<T>(
@@ -488,6 +583,7 @@ async fn calls_edge_without_byte_offsets_rejected_by_per_kind_contract() {
         kind: "calls".to_owned(),
         from_id: "python:function:demo.caller".to_owned(),
         to_id: "python:function:demo.callee".to_owned(),
+        confidence: EdgeConfidence::Resolved,
         properties_json: None,
         source_file_id: Some("python:module:demo".to_owned()),
         source_byte_start: None,
@@ -546,6 +642,7 @@ async fn unknown_edge_kind_rejected_strictly() {
         kind: "smells_like".to_owned(),
         from_id: "python:module:demo".to_owned(),
         to_id: "python:function:demo.f".to_owned(),
+        confidence: EdgeConfidence::Resolved,
         properties_json: None,
         source_file_id: Some("python:module:demo".to_owned()),
         source_byte_start: None,
@@ -560,6 +657,11 @@ async fn unknown_edge_kind_rejected_strictly() {
     assert!(
         format!("{err:?}").contains("CLA-INFRA-EDGE-UNKNOWN-KIND"),
         "expected CLA-INFRA-EDGE-UNKNOWN-KIND in error; got {err:?}"
+    );
+    assert_eq!(
+        writer.dropped_edges_total.load(Ordering::Relaxed),
+        1,
+        "unknown-kind rejection should increment dropped_edges_total"
     );
 
     drop(tx);
@@ -847,6 +949,225 @@ async fn writes_in_batch_counts_entities_and_edges_uniformly() {
     drop(tx);
     drop(writer);
     handle.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn structural_contains_ambiguous_confidence_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = prepared_db(&dir);
+    let (writer, handle) = Writer::spawn(path.clone(), 50, 256).unwrap();
+    let tx = writer.sender();
+
+    begin_demo_run(&tx, "run-confidence-contains-ambiguous").await;
+    seed_module_and_functions(&tx).await;
+
+    assert_edge_rejected_with_counter(
+        &writer,
+        &tx,
+        make_structural_edge(
+            "contains",
+            "python:module:demo",
+            "python:function:demo.caller",
+            EdgeConfidence::Ambiguous,
+        ),
+        "CLA-INFRA-EDGE-CONFIDENCE-CONTRACT",
+    )
+    .await;
+
+    drop(tx);
+    drop(writer);
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn structural_contains_inferred_confidence_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = prepared_db(&dir);
+    let (writer, handle) = Writer::spawn(path.clone(), 50, 256).unwrap();
+    let tx = writer.sender();
+
+    begin_demo_run(&tx, "run-confidence-contains-inferred").await;
+    seed_module_and_functions(&tx).await;
+
+    assert_edge_rejected_with_counter(
+        &writer,
+        &tx,
+        make_structural_edge(
+            "contains",
+            "python:module:demo",
+            "python:function:demo.caller",
+            EdgeConfidence::Inferred,
+        ),
+        "CLA-INFRA-EDGE-CONFIDENCE-CONTRACT",
+    )
+    .await;
+
+    drop(tx);
+    drop(writer);
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn second_structural_kind_inferred_confidence_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = prepared_db(&dir);
+    let (writer, handle) = Writer::spawn(path.clone(), 50, 256).unwrap();
+    let tx = writer.sender();
+
+    begin_demo_run(&tx, "run-confidence-subsystem-inferred").await;
+    seed_module_and_functions(&tx).await;
+
+    assert_edge_rejected_with_counter(
+        &writer,
+        &tx,
+        make_structural_edge(
+            "in_subsystem",
+            "python:module:demo",
+            "python:function:demo.caller",
+            EdgeConfidence::Inferred,
+        ),
+        "CLA-INFRA-EDGE-CONFIDENCE-CONTRACT",
+    )
+    .await;
+
+    drop(tx);
+    drop(writer);
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn anchored_calls_inferred_confidence_rejected_at_scan_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = prepared_db(&dir);
+    let (writer, handle) = Writer::spawn(path.clone(), 50, 256).unwrap();
+    let tx = writer.sender();
+
+    begin_demo_run(&tx, "run-confidence-calls-inferred").await;
+    seed_module_and_functions(&tx).await;
+
+    assert_edge_rejected_with_counter(
+        &writer,
+        &tx,
+        make_calls_edge(
+            "python:function:demo.caller",
+            "python:function:demo.callee",
+            EdgeConfidence::Inferred,
+        ),
+        "CLA-INFRA-EDGE-CONFIDENCE-CONTRACT",
+    )
+    .await;
+
+    drop(tx);
+    drop(writer);
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn anchored_calls_ambiguous_confidence_is_accepted_and_counted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = prepared_db(&dir);
+    let (writer, handle) = Writer::spawn(path.clone(), 50, 256).unwrap();
+    let tx = writer.sender();
+
+    begin_demo_run(&tx, "run-confidence-calls-ambiguous").await;
+    seed_module_and_functions(&tx).await;
+    seed_contains_edges_for_demo_functions(&tx).await;
+
+    send::<()>(&tx, |ack| WriterCmd::InsertEdge {
+        edge: Box::new(make_calls_edge(
+            "python:function:demo.caller",
+            "python:function:demo.callee",
+            EdgeConfidence::Ambiguous,
+        )),
+        ack,
+    })
+    .await
+    .unwrap();
+    assert_eq!(writer.dropped_edges_total.load(Ordering::Relaxed), 0);
+    assert_eq!(writer.ambiguous_edges_total.load(Ordering::Relaxed), 1);
+
+    send::<()>(&tx, |ack| WriterCmd::CommitRun {
+        run_id: "run-confidence-calls-ambiguous".into(),
+        status: RunStatus::Completed,
+        completed_at: now_iso(),
+        stats_json: "{}".into(),
+        ack,
+    })
+    .await
+    .unwrap();
+
+    drop(tx);
+    drop(writer);
+    handle.await.unwrap().unwrap();
+
+    let pool = ReaderPool::open(&path, 1).unwrap();
+    let (count, confidence): (i64, String) = pool
+        .with_reader(|conn| {
+            let row = conn.query_row(
+                "SELECT COUNT(*), max(confidence) FROM edges WHERE kind = 'calls'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            Ok(row)
+        })
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(confidence, "ambiguous");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn anchored_calls_resolved_confidence_is_accepted_without_counters() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = prepared_db(&dir);
+    let (writer, handle) = Writer::spawn(path.clone(), 50, 256).unwrap();
+    let tx = writer.sender();
+
+    begin_demo_run(&tx, "run-confidence-calls-resolved").await;
+    seed_module_and_functions(&tx).await;
+    seed_contains_edges_for_demo_functions(&tx).await;
+
+    send::<()>(&tx, |ack| WriterCmd::InsertEdge {
+        edge: Box::new(make_calls_edge(
+            "python:function:demo.caller",
+            "python:function:demo.callee",
+            EdgeConfidence::Resolved,
+        )),
+        ack,
+    })
+    .await
+    .unwrap();
+    assert_eq!(writer.dropped_edges_total.load(Ordering::Relaxed), 0);
+    assert_eq!(writer.ambiguous_edges_total.load(Ordering::Relaxed), 0);
+
+    send::<()>(&tx, |ack| WriterCmd::CommitRun {
+        run_id: "run-confidence-calls-resolved".into(),
+        status: RunStatus::Completed,
+        completed_at: now_iso(),
+        stats_json: "{}".into(),
+        ack,
+    })
+    .await
+    .unwrap();
+
+    drop(tx);
+    drop(writer);
+    handle.await.unwrap().unwrap();
+
+    let pool = ReaderPool::open(&path, 1).unwrap();
+    let (count, confidence): (i64, String) = pool
+        .with_reader(|conn| {
+            let row = conn.query_row(
+                "SELECT COUNT(*), max(confidence) FROM edges WHERE kind = 'calls'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            Ok(row)
+        })
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(confidence, "resolved");
 }
 
 /// Regression for review finding #8: if the channel closes while a run is

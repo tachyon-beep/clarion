@@ -22,7 +22,7 @@ use clarion_core::{
 };
 use clarion_storage::{
     DEFAULT_BATCH_SIZE, DEFAULT_CHANNEL_CAPACITY, Writer,
-    commands::{EdgeRecord, EntityRecord, RunStatus, WriterCmd},
+    commands::{EdgeConfidence, EdgeRecord, EntityRecord, RunStatus, WriterCmd},
 };
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -750,6 +750,7 @@ fn map_edge_to_record(edge: AcceptedEdge) -> EdgeRecord {
         kind: edge.kind,
         from_id: edge.from_id,
         to_id: edge.to_id,
+        confidence: EdgeConfidence::Resolved,
         properties_json,
         source_file_id: edge.source_file_id,
         source_byte_start: edge.raw.source_byte_start,

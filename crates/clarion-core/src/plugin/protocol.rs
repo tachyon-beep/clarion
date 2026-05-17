@@ -35,6 +35,33 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::{Map, Value};
 
+/// Edge-confidence tier carried on edge rows and wire records (ADR-028).
+///
+/// Ordering is permissiveness, not trust strength: `Resolved < Ambiguous <
+/// Inferred`, so a consumer asking for `confidence >= Ambiguous` opts into
+/// ambiguous and inferred tiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EdgeConfidence {
+    /// Static analysis resolved the edge unambiguously.
+    #[default]
+    Resolved,
+    /// Static analysis found more than one in-project candidate.
+    Ambiguous,
+    /// Query-time inference produced the edge.
+    Inferred,
+}
+
+impl EdgeConfidence {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Resolved => "resolved",
+            Self::Ambiguous => "ambiguous",
+            Self::Inferred => "inferred",
+        }
+    }
+}
+
 // ── JSON-RPC version wrapper ──────────────────────────────────────────────────
 
 /// Wrapper that (de)serialises to/from the literal string `"2.0"`.
