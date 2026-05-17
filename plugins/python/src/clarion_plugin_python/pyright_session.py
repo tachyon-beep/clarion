@@ -1,0 +1,796 @@
+from __future__ import annotations
+
+import ast
+import json
+import math
+import os
+import select
+import shutil
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import IO, TYPE_CHECKING, Any, Self
+from urllib.parse import unquote, urlparse
+
+from clarion_plugin_python import __version__
+from clarion_plugin_python.call_resolver import CallResolutionResult, CallsRawEdge, Finding
+from clarion_plugin_python.entity_id import entity_id
+from clarion_plugin_python.extractor import module_dotted_name
+from clarion_plugin_python.qualname import reconstruct_qualname
+
+FINDING_PYRIGHT_RESTART = "CLA-PY-PYRIGHT-RESTART"
+FINDING_PYRIGHT_POISON_FRAME = "CLA-PY-PYRIGHT-POISON-FRAME"
+FINDING_PYRIGHT_INIT_TIMEOUT = "CLA-PY-PYRIGHT-INIT-TIMEOUT"
+FINDING_PYRIGHT_UNAVAILABLE = "CLA-PY-PYRIGHT-UNAVAILABLE"
+FINDING_PYRIGHT_INSTALL_FAILURE = "CLA-PY-PYRIGHT-INSTALL-FAILURE"
+FINDING_PYRIGHT_CALL_RESOLUTION_TIMEOUT = "CLA-PY-CALL-RESOLUTION-TIMEOUT"
+
+MAX_PYRIGHT_RESTARTS_PER_RUN = 3
+PYRIGHT_INIT_TIMEOUT_SECS = 30.0
+PYRIGHT_CALL_TIMEOUT_SECS = 5.0
+STDERR_TAIL_LIMIT = 65536
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+
+class LspTimeoutError(TimeoutError):
+    def __init__(self, method: str) -> None:
+        super().__init__(f"{method} timed out")
+        self.method = method
+
+
+class LspTransportClosedError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class _CallSite:
+    line: int
+    character: int
+    end_line: int
+    end_character: int
+
+
+@dataclass(frozen=True)
+class _FunctionInfo:
+    entity_id: str
+    qualified_name: str
+    name: str
+    line: int
+    character: int
+    end_line: int
+    end_character: int
+    call_sites: tuple[_CallSite, ...]
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+
+
+@dataclass(frozen=True)
+class _FunctionIndex:
+    source: str
+    line_starts: tuple[int, ...]
+    by_id: dict[str, _FunctionInfo]
+    by_name_position: dict[tuple[int, int], _FunctionInfo]
+    by_short_name: dict[str, str]
+    functions: tuple[_FunctionInfo, ...]
+    tree: ast.Module
+
+
+class PyrightSession:
+    def __init__(  # noqa: PLR0913 - knobs are tested lifecycle boundaries.
+        self,
+        project_root: str | Path,
+        *,
+        executable: str = "pyright-langserver",
+        env: dict[str, str] | None = None,
+        install_check: Callable[[str], bool] | None = None,
+        init_timeout_secs: float = PYRIGHT_INIT_TIMEOUT_SECS,
+        call_timeout_secs: float = PYRIGHT_CALL_TIMEOUT_SECS,
+        max_restarts_per_run: int = MAX_PYRIGHT_RESTARTS_PER_RUN,
+    ) -> None:
+        self.project_root = Path(project_root).resolve()
+        self.executable = executable
+        self.env = env
+        self.install_check = install_check
+        self.init_timeout_secs = init_timeout_secs
+        self.call_timeout_secs = call_timeout_secs
+        self.max_restarts_per_run = max_restarts_per_run
+        self._process: subprocess.Popen[bytes] | None = None
+        self._stderr_thread: threading.Thread | None = None
+        self._stderr_tail = bytearray()
+        self._next_id = 1
+        self._restart_count = 0
+        self._disabled = False
+        self._findings: list[Finding] = []
+        self._function_indexes: dict[Path, _FunctionIndex] = {}
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        _ = (exc_type, exc, tb)
+        self.close()
+
+    @property
+    def stderr_thread_alive(self) -> bool:
+        return self._stderr_thread is not None and self._stderr_thread.is_alive()
+
+    def kill_for_test(self) -> None:
+        if self._process is None or self._process.poll() is not None:
+            return
+        self._process.kill()
+        self._process.wait(timeout=2)
+
+    def close(self) -> None:
+        process = self._process
+        if process is not None and process.poll() is None:
+            try:
+                self._request("shutdown", {}, self.call_timeout_secs)
+                self._notify("exit", {})
+            except (LspTimeoutError, LspTransportClosedError, BrokenPipeError, OSError):
+                process.kill()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        self._process = None
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=2)
+
+    def resolve_calls(
+        self,
+        file_path: str | Path,
+        function_ids: Sequence[str],
+    ) -> CallResolutionResult:
+        path = Path(file_path).resolve()
+        index = self._function_index_for_path(path)
+        requested = [
+            index.by_id[function_id] for function_id in function_ids if function_id in index.by_id
+        ]
+        ast_call_sites_total = sum(len(function.call_sites) for function in requested)
+        if not requested:
+            return CallResolutionResult(findings=self._pop_findings())
+
+        if not self._ensure_process():
+            return CallResolutionResult(
+                unresolved_call_sites_total=ast_call_sites_total,
+                findings=self._pop_findings(),
+            )
+
+        latency_started = time.perf_counter()
+        try:
+            edges, unresolved = self._resolve_with_pyright(path, index, requested)
+        except LspTimeoutError as exc:
+            self._record_finding(
+                FINDING_PYRIGHT_CALL_RESOLUTION_TIMEOUT,
+                f"pyright query timed out: {exc.method}",
+                method=exc.method,
+            )
+            edges = []
+            unresolved = ast_call_sites_total
+        except (LspTransportClosedError, BrokenPipeError, OSError) as exc:
+            self._record_restart_or_poison(str(exc))
+            edges = []
+            unresolved = ast_call_sites_total
+        latency_ms = max(1, math.ceil((time.perf_counter() - latency_started) * 1000))
+
+        return CallResolutionResult(
+            edges=edges,
+            unresolved_call_sites_total=unresolved,
+            pyright_query_latency_ms=[latency_ms],
+            findings=self._pop_findings(),
+        )
+
+    def _resolve_with_pyright(
+        self,
+        path: Path,
+        index: _FunctionIndex,
+        functions: Sequence[_FunctionInfo],
+    ) -> tuple[list[CallsRawEdge], int]:
+        uri = path.as_uri()
+        self._notify(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "python",
+                    "version": 1,
+                    "text": index.source,
+                },
+            },
+        )
+        try:
+            edges: list[CallsRawEdge] = []
+            unresolved_total = 0
+            for function in functions:
+                grouped: dict[tuple[int, int, int, int], set[str]] = {}
+                prepared = self._request(
+                    "textDocument/prepareCallHierarchy",
+                    {
+                        "textDocument": {"uri": uri},
+                        "position": {"line": function.line, "character": function.character},
+                    },
+                    self.call_timeout_secs,
+                )
+                items = prepared if isinstance(prepared, list) else []
+                for item in items:
+                    outgoing = self._request(
+                        "callHierarchy/outgoingCalls",
+                        {"item": item},
+                        self.call_timeout_secs,
+                    )
+                    calls = outgoing if isinstance(outgoing, list) else []
+                    for call in calls:
+                        if not isinstance(call, dict):
+                            continue
+                        to_id = self._target_id_from_call(call)
+                        if to_id is None:
+                            continue
+                        from_ranges = call.get("fromRanges")
+                        if not isinstance(from_ranges, list):
+                            continue
+                        for from_range in from_ranges:
+                            key = _range_key(from_range)
+                            if key is not None:
+                                grouped.setdefault(key, set()).add(to_id)
+
+                for range_key, candidates in _ambiguous_dict_dispatches(index, function).items():
+                    grouped.setdefault(range_key, set()).update(candidates)
+
+                for range_key in sorted(grouped):
+                    candidate_ids = sorted(grouped[range_key])
+                    if not candidate_ids:
+                        continue
+                    start_line, start_character, end_line, end_character = range_key
+                    start_byte = _position_to_byte(index, start_line, start_character)
+                    end_byte = _position_to_byte(index, end_line, end_character)
+                    edge: CallsRawEdge = {
+                        "kind": "calls",
+                        "from_id": function.entity_id,
+                        "to_id": candidate_ids[0],
+                        "source_byte_start": start_byte,
+                        "source_byte_end": end_byte,
+                        "confidence": "resolved" if len(candidate_ids) == 1 else "ambiguous",
+                    }
+                    if len(candidate_ids) > 1:
+                        edge["properties"] = {"candidates": candidate_ids}
+                    edges.append(edge)
+
+                unresolved_total += max(len(function.call_sites) - len(grouped), 0)
+            return edges, unresolved_total
+        finally:
+            self._notify("textDocument/didClose", {"textDocument": {"uri": uri}})
+
+    def _ensure_process(self) -> bool:
+        if self._disabled:
+            return False
+        if self._process is None:
+            return self._start_process()
+        if self._process.poll() is None:
+            return True
+        self._process = None
+        self._record_restart_or_poison("pyright subprocess exited")
+        if self._disabled:
+            return False
+        return self._start_process()
+
+    def _record_restart_or_poison(self, reason: str) -> None:
+        self._restart_count += 1
+        if self._restart_count > self.max_restarts_per_run:
+            self._disabled = True
+            self._record_finding(
+                FINDING_PYRIGHT_POISON_FRAME,
+                "pyright restart cap exceeded; skipping call resolution",
+                restart_count=self._restart_count,
+                reason=reason,
+            )
+            return
+        self._record_finding(
+            FINDING_PYRIGHT_RESTART,
+            "pyright subprocess died and was restarted",
+            restart_count=self._restart_count,
+            reason=reason,
+        )
+
+    def _start_process(self) -> bool:
+        executable = self._resolve_executable()
+        if executable is None:
+            self._disabled = True
+            self._record_finding(
+                FINDING_PYRIGHT_UNAVAILABLE,
+                "pyright-langserver is not available",
+                executable=self.executable,
+            )
+            return False
+        if self.install_check is not None and not self.install_check(executable):
+            self._disabled = True
+            self._record_finding(
+                FINDING_PYRIGHT_INSTALL_FAILURE,
+                "pyright-langserver executability check failed",
+                executable=executable,
+            )
+            return False
+
+        try:
+            process = subprocess.Popen(  # noqa: S603 - executable path comes from manifest/PATH.
+                [executable, "--stdio"],
+                cwd=self.project_root,
+                env=self._subprocess_env(),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            self._disabled = True
+            self._record_finding(
+                FINDING_PYRIGHT_INSTALL_FAILURE,
+                "pyright-langserver failed to start",
+                executable=executable,
+                error=str(exc),
+            )
+            return False
+
+        self._process = process
+        self._start_stderr_drain(process)
+        try:
+            self._initialize()
+        except LspTimeoutError:
+            self._disabled = True
+            self._record_finding(
+                FINDING_PYRIGHT_INIT_TIMEOUT,
+                "pyright initialize handshake timed out",
+                timeout_secs=self.init_timeout_secs,
+            )
+            process.kill()
+            process.wait(timeout=2)
+            return False
+        except (LspTransportClosedError, BrokenPipeError, OSError) as exc:
+            self._disabled = True
+            self._record_finding(
+                FINDING_PYRIGHT_UNAVAILABLE,
+                "pyright initialize handshake failed",
+                error=str(exc),
+            )
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=2)
+            return False
+        return True
+
+    def _initialize(self) -> None:
+        result = self._request(
+            "initialize",
+            {
+                "processId": os.getpid(),
+                "rootUri": self.project_root.as_uri(),
+                "workspaceFolders": [
+                    {"uri": self.project_root.as_uri(), "name": self.project_root.name},
+                ],
+                "capabilities": {},
+                "clientInfo": {"name": "clarion-plugin-python", "version": __version__},
+            },
+            self.init_timeout_secs,
+        )
+        _ = result
+        self._notify("initialized", {})
+
+    def _resolve_executable(self) -> str | None:
+        candidate = Path(self.executable)
+        if candidate.parent != Path() or candidate.is_absolute():
+            return str(candidate) if candidate.exists() else None
+        return shutil.which(self.executable)
+
+    def _subprocess_env(self) -> dict[str, str]:
+        if self.env is None:
+            return os.environ.copy()
+        merged = os.environ.copy()
+        merged.update(self.env)
+        return merged
+
+    def _start_stderr_drain(self, process: subprocess.Popen[bytes]) -> None:
+        stderr = process.stderr
+        if stderr is None:
+            return
+        thread = threading.Thread(target=self._drain_stderr, args=(stderr,), daemon=True)
+        thread.start()
+        self._stderr_thread = thread
+
+    def _drain_stderr(self, stderr: IO[bytes]) -> None:
+        while True:
+            chunk = stderr.read(8192)
+            if not chunk:
+                return
+            self._stderr_tail.extend(chunk)
+            if len(self._stderr_tail) > STDERR_TAIL_LIMIT:
+                del self._stderr_tail[:-STDERR_TAIL_LIMIT]
+
+    def _request(self, method: str, params: dict[str, object], timeout_secs: float) -> object:
+        process = self._live_process()
+        request_id = self._next_id
+        self._next_id += 1
+        self._write_message(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            },
+        )
+        while True:
+            response = self._read_message(timeout_secs)
+            if response.get("id") != request_id:
+                continue
+            if "error" in response:
+                raise LspTransportClosedError(str(response["error"]))
+            process.poll()
+            return response.get("result")
+
+    def _notify(self, method: str, params: dict[str, object]) -> None:
+        self._live_process()
+        self._write_message({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def _live_process(self) -> subprocess.Popen[bytes]:
+        if self._process is None or self._process.poll() is not None:
+            message = "pyright subprocess is not running"
+            raise LspTransportClosedError(message)
+        return self._process
+
+    def _write_message(self, message: dict[str, object]) -> None:
+        process = self._live_process()
+        if process.stdin is None:
+            error_message = "pyright stdin is closed"
+            raise LspTransportClosedError(error_message)
+        body = json.dumps(message, separators=(",", ":")).encode("utf-8")
+        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+        process.stdin.write(header)
+        process.stdin.write(body)
+        process.stdin.flush()
+
+    def _read_message(self, timeout_secs: float) -> dict[str, Any]:
+        process = self._live_process()
+        if process.stdout is None:
+            message = "pyright stdout is closed"
+            raise LspTransportClosedError(message)
+        fd = process.stdout.fileno()
+        deadline = time.monotonic() + timeout_secs
+        headers: dict[str, str] = {}
+        while True:
+            line = _read_line(fd, deadline)
+            if line in (b"\r\n", b"\n"):
+                break
+            if b":" not in line:
+                message = f"malformed LSP header: {line!r}"
+                raise LspTransportClosedError(message)
+            name, value = line.decode("ascii").strip().split(":", 1)
+            headers[name.lower()] = value.strip()
+        length = int(headers["content-length"])
+        body = _read_exact(fd, length, deadline)
+        parsed: dict[str, Any] = json.loads(body)
+        return parsed
+
+    def _target_id_from_call(self, call: dict[object, object]) -> str | None:
+        raw_to = call.get("to")
+        if not isinstance(raw_to, dict):
+            return None
+        raw_uri = raw_to.get("uri")
+        raw_selection = raw_to.get("selectionRange")
+        if not isinstance(raw_uri, str) or not isinstance(raw_selection, dict):
+            return None
+        target_path = _path_from_uri(raw_uri)
+        if target_path is None:
+            return None
+        index = self._function_index_for_path(target_path)
+        key = _range_start_key(raw_selection)
+        if key is not None and key in index.by_name_position:
+            return index.by_name_position[key].entity_id
+        return _containing_function_id(index, raw_selection)
+
+    def _function_index_for_path(self, path: Path) -> _FunctionIndex:
+        resolved = path.resolve()
+        cached = self._function_indexes.get(resolved)
+        if cached is not None:
+            return cached
+        source = resolved.read_text(encoding="utf-8")
+        index = _build_function_index(self.project_root, resolved, source)
+        self._function_indexes[resolved] = index
+        return index
+
+    def _record_finding(self, subcode: str, message: str, **metadata: object) -> None:
+        self._findings.append(
+            {
+                "subcode": subcode,
+                "severity": "warning",
+                "message": message,
+                "metadata": metadata,
+            },
+        )
+
+    def _pop_findings(self) -> list[Finding]:
+        findings = self._findings
+        self._findings = []
+        return findings
+
+
+def _build_function_index(project_root: Path, path: Path, source: str) -> _FunctionIndex:
+    relative = path.relative_to(project_root) if path.is_relative_to(project_root) else path
+    dotted_module = module_dotted_name(relative.as_posix())
+    tree = ast.parse(source)
+    functions: list[_FunctionInfo] = []
+    source_lines = source.splitlines()
+    _collect_functions(tree, [tree], dotted_module, source_lines, functions)
+    line_starts = _line_starts(source)
+    by_id = {function.entity_id: function for function in functions}
+    by_name_position = {(function.line, function.character): function for function in functions}
+    by_short_name = {function.name: function.entity_id for function in functions}
+    return _FunctionIndex(
+        source=source,
+        line_starts=line_starts,
+        by_id=by_id,
+        by_name_position=by_name_position,
+        by_short_name=by_short_name,
+        functions=tuple(functions),
+        tree=tree,
+    )
+
+
+def _collect_functions(
+    node: ast.AST,
+    parents: list[ast.AST],
+    dotted_module: str,
+    source_lines: list[str],
+    out: list[_FunctionInfo],
+) -> None:
+    for child in ast.iter_child_nodes(node):
+        match child:
+            case ast.FunctionDef() | ast.AsyncFunctionDef():
+                python_qualname = reconstruct_qualname(child, parents)
+                qualified_name = f"{dotted_module}.{python_qualname}"
+                line_text = (
+                    source_lines[child.lineno - 1] if child.lineno <= len(source_lines) else ""
+                )
+                character = line_text.find(child.name)
+                if character < 0:
+                    character = child.col_offset
+                out.append(
+                    _FunctionInfo(
+                        entity_id=entity_id("python", "function", qualified_name),
+                        qualified_name=qualified_name,
+                        name=child.name,
+                        line=child.lineno - 1,
+                        character=character,
+                        end_line=(child.end_lineno or child.lineno) - 1,
+                        end_character=child.end_col_offset or child.col_offset,
+                        call_sites=tuple(_function_call_sites(child)),
+                        node=child,
+                    ),
+                )
+                _collect_functions(child, [*parents, child], dotted_module, source_lines, out)
+            case ast.ClassDef():
+                _collect_functions(child, [*parents, child], dotted_module, source_lines, out)
+            case _:
+                _collect_functions(child, [*parents, child], dotted_module, source_lines, out)
+
+
+def _function_call_sites(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[_CallSite]:
+    visitor = _CallSiteVisitor()
+    for statement in node.body:
+        visitor.visit(statement)
+    return visitor.call_sites
+
+
+class _CallSiteVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.call_sites: list[_CallSite] = []
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        self.call_sites.append(
+            _CallSite(
+                func.lineno - 1,
+                func.col_offset,
+                (func.end_lineno or func.lineno) - 1,
+                func.end_col_offset or func.col_offset,
+            ),
+        )
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        _ = node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        _ = node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        _ = node
+
+
+def _ambiguous_dict_dispatches(
+    index: _FunctionIndex,
+    function: _FunctionInfo,
+) -> dict[tuple[int, int, int, int], set[str]]:
+    candidate_maps = _callable_dict_maps(index, function.node)
+    if not candidate_maps:
+        return {}
+    visitor = _DictDispatchVisitor(candidate_maps)
+    for statement in function.node.body:
+        visitor.visit(statement)
+    return visitor.dispatches
+
+
+def _callable_dict_maps(
+    index: _FunctionIndex,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> dict[str, set[str]]:
+    maps: dict[str, set[str]] = {}
+    for body in [index.tree.body, function.body]:
+        for statement in body:
+            name, value = _callable_dict_assignment(statement, index.by_short_name)
+            if name is not None and value:
+                maps[name] = value
+    return maps
+
+
+def _callable_dict_assignment(
+    statement: ast.stmt,
+    by_short_name: dict[str, str],
+) -> tuple[str | None, set[str]]:
+    target: ast.expr | None = None
+    value: ast.expr | None = None
+    match statement:
+        case ast.Assign(targets=[ast.Name() as name], value=ast.Dict() as dict_value):
+            target = name
+            value = dict_value
+        case ast.AnnAssign(target=ast.Name() as name, value=ast.Dict() as dict_value):
+            target = name
+            value = dict_value
+        case _:
+            return None, set()
+    candidates: set[str] = set()
+    if isinstance(value, ast.Dict):
+        for item in value.values:
+            if isinstance(item, ast.Name) and item.id in by_short_name:
+                candidates.add(by_short_name[item.id])
+    if isinstance(target, ast.Name):
+        return target.id, candidates
+    return None, candidates
+
+
+class _DictDispatchVisitor(ast.NodeVisitor):
+    def __init__(self, candidate_maps: dict[str, set[str]]) -> None:
+        self.candidate_maps = candidate_maps
+        self.dispatches: dict[tuple[int, int, int, int], set[str]] = {}
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        if (
+            isinstance(func, ast.Subscript)
+            and isinstance(func.value, ast.Name)
+            and func.value.id in self.candidate_maps
+        ):
+            key = (
+                func.lineno - 1,
+                func.col_offset,
+                (func.end_lineno or func.lineno) - 1,
+                func.end_col_offset or func.col_offset,
+            )
+            self.dispatches[key] = set(self.candidate_maps[func.value.id])
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        _ = node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        _ = node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        _ = node
+
+
+def _line_starts(source: str) -> tuple[int, ...]:
+    starts = [0]
+    total = 0
+    for line in source.splitlines(keepends=True):
+        total += len(line.encode("utf-8"))
+        starts.append(total)
+    return tuple(starts)
+
+
+def _position_to_byte(index: _FunctionIndex, line: int, character: int) -> int:
+    if line >= len(index.line_starts):
+        return len(index.source.encode("utf-8"))
+    line_start = index.line_starts[line]
+    line_text = index.source.splitlines(keepends=True)[line] if index.source else ""
+    return line_start + len(line_text[:character].encode("utf-8"))
+
+
+def _range_key(raw_range: object) -> tuple[int, int, int, int] | None:
+    if not isinstance(raw_range, dict):
+        return None
+    start = raw_range.get("start")
+    end = raw_range.get("end")
+    if not isinstance(start, dict) or not isinstance(end, dict):
+        return None
+    start_line = start.get("line")
+    start_character = start.get("character")
+    end_line = end.get("line")
+    end_character = end.get("character")
+    if not isinstance(start_line, int):
+        return None
+    if not isinstance(start_character, int):
+        return None
+    if not isinstance(end_line, int):
+        return None
+    if not isinstance(end_character, int):
+        return None
+    return (start_line, start_character, end_line, end_character)
+
+
+def _range_start_key(raw_range: dict[object, object]) -> tuple[int, int] | None:
+    start = raw_range.get("start")
+    if not isinstance(start, dict):
+        return None
+    line = start.get("line")
+    character = start.get("character")
+    if isinstance(line, int) and isinstance(character, int):
+        return (line, character)
+    return None
+
+
+def _containing_function_id(index: _FunctionIndex, raw_range: dict[object, object]) -> str | None:
+    key = _range_start_key(raw_range)
+    if key is None:
+        return None
+    line, character = key
+    for function in index.functions:
+        if function.line <= line <= function.end_line and (
+            line != function.line or character >= function.character
+        ):
+            return function.entity_id
+    return None
+
+
+def _path_from_uri(uri: str) -> Path | None:
+    parsed = urlparse(uri)
+    if parsed.scheme != "file":
+        return None
+    return Path(unquote(parsed.path)).resolve()
+
+
+def _read_line(fd: int, deadline: float) -> bytes:
+    chunks = bytearray()
+    while True:
+        _wait_readable(fd, deadline)
+        chunk = os.read(fd, 1)
+        if not chunk:
+            message = "EOF while reading LSP header"
+            raise LspTransportClosedError(message)
+        chunks.extend(chunk)
+        if chunk == b"\n":
+            return bytes(chunks)
+
+
+def _read_exact(fd: int, length: int, deadline: float) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < length:
+        _wait_readable(fd, deadline)
+        chunk = os.read(fd, length - len(chunks))
+        if not chunk:
+            message = "EOF while reading LSP body"
+            raise LspTransportClosedError(message)
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _wait_readable(fd: int, deadline: float) -> None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        message = "LSP read"
+        raise LspTimeoutError(message)
+    ready, _, _ = select.select([fd], [], [], remaining)
+    if not ready:
+        message = "LSP read"
+        raise LspTimeoutError(message)

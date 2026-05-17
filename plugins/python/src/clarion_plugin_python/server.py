@@ -29,6 +29,7 @@ from typing import IO, Any
 
 from clarion_plugin_python import __version__
 from clarion_plugin_python.extractor import extract
+from clarion_plugin_python.pyright_session import PyrightSession
 from clarion_plugin_python.stdout_guard import install_stdio
 from clarion_plugin_python.wardline_probe import probe as wardline_probe
 
@@ -64,6 +65,7 @@ class ServerState:
     initialized: bool = False
     shutdown_requested: bool = False
     project_root: Path | None = field(default=None)
+    pyright: PyrightSession | None = field(default=None)
 
 
 def read_frame(stream: IO[bytes]) -> dict[str, Any] | None:
@@ -182,6 +184,8 @@ def handle_analyze_file(params: dict[str, Any], state: ServerState) -> dict[str,
     if not isinstance(file_path_raw, str):
         return {"entities": [], "edges": [], "stats": empty_stats}
     path = Path(file_path_raw)
+    if state.pyright is None:
+        state.pyright = PyrightSession(state.project_root or path.parent)
     try:
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -217,6 +221,9 @@ def dispatch(frame: dict[str, Any], state: ServerState) -> dict[str, Any] | None
         return None
     if method == "shutdown":
         state.shutdown_requested = True
+        if state.pyright is not None:
+            state.pyright.close()
+            state.pyright = None
         return _success(request_id, {})
     if not isinstance(method, str):
         return _error(request_id, _ERR_INVALID_REQUEST, f"invalid method: {method!r}")

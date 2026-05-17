@@ -89,3 +89,7 @@ files = ["src", "tests"]
 testpaths = ["tests"]
 addopts = "--strict-markers --cov=clarion_plugin_python --cov-report=term-missing"
 pythonpath = ["src"]
+markers = [
+    "pyright: requires pyright-langserver on PATH or in the active virtualenv",
+    "slow: exercises subprocess or scale behavior that is slower than unit tests",
+]

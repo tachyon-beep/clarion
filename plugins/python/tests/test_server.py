@@ -13,10 +13,14 @@ import json
 import subprocess
 import sys
 import textwrap
-from typing import IO, TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any, cast
+
+from clarion_plugin_python import server as server_module
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
 
 # Invoke via ``sys.executable -m`` rather than the installed console script so
 # the test works regardless of whether the venv's bin dir is on $PATH when
@@ -252,3 +256,48 @@ def test_method_not_found_returns_error() -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=2)
+
+
+def test_analyze_file_lazy_initializes_pyright(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePyrightSession:
+        def __init__(self, project_root: Path) -> None:
+            self.project_root = project_root
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(server_module, "PyrightSession", FakePyrightSession, raising=False)
+    demo = tmp_path / "demo.py"
+    demo.write_text("def hello():\n    pass\n", encoding="utf-8")
+    state = server_module.ServerState(initialized=True, project_root=tmp_path)
+
+    server_module.handle_analyze_file({"file_path": str(demo)}, state)
+
+    assert isinstance(state.pyright, FakePyrightSession)
+    assert state.pyright.project_root == tmp_path
+
+
+def test_shutdown_closes_pyright_session() -> None:
+    class FakePyrightSession:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake = FakePyrightSession()
+    state = server_module.ServerState(initialized=True)
+    state.pyright = cast("Any", fake)
+
+    response = server_module.dispatch(
+        {"jsonrpc": "2.0", "id": 1, "method": "shutdown", "params": {}},
+        state,
+    )
+
+    assert response == {"jsonrpc": "2.0", "id": 1, "result": {}}
+    assert fake.closed is True
+    assert state.pyright is None
