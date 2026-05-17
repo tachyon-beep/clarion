@@ -7,6 +7,7 @@ import os
 import select
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -385,6 +386,9 @@ class PyrightSession:
         candidate = Path(self.executable)
         if candidate.parent != Path() or candidate.is_absolute():
             return str(candidate) if candidate.exists() else None
+        sibling = Path(sys.executable).parent / self.executable
+        if sibling.exists():
+            return str(sibling)
         return shutil.which(self.executable)
 
     def _subprocess_env(self) -> dict[str, str]:

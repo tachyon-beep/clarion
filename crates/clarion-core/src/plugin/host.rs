@@ -137,6 +137,21 @@ pub const MAX_ENTITY_FIELD_BYTES: usize = 4 * 1024;
 /// payload is <2 KiB) while rejecting payload floods.
 pub const MAX_ENTITY_EXTRA_BYTES: usize = 64 * 1024;
 
+/// Pyright's Node-based language server spawns helper threads/processes and
+/// inherits the plugin child's `RLIMIT_NPROC`. On Linux that limit is checked
+/// against all processes/threads for the user, not just descendants of the
+/// plugin, so the Sprint-1 single-plugin ceiling is too low for B.4* call
+/// resolution on ordinary developer workstations.
+const PYRIGHT_MAX_NPROC: u64 = 4096;
+
+fn effective_max_nproc(manifest: &Manifest) -> u64 {
+    if manifest.capabilities.runtime.pyright.is_some() {
+        PYRIGHT_MAX_NPROC
+    } else {
+        DEFAULT_MAX_NPROC
+    }
+}
+
 // ── Wire entity types (Option A) ──────────────────────────────────────────────
 
 /// Raw entity as received from the plugin wire.
@@ -730,7 +745,7 @@ impl
                 DEFAULT_MAX_RSS_MIB,
             );
             let max_nofile = DEFAULT_MAX_NOFILE;
-            let max_nproc = DEFAULT_MAX_NPROC;
+            let max_nproc = effective_max_nproc(&manifest);
             #[allow(unsafe_code)]
             unsafe {
                 command.pre_exec(move || {
@@ -1404,6 +1419,35 @@ ontology_version = "0.4.0"
         crate::plugin::parse_manifest(toml.as_bytes()).expect("valid calls manifest")
     }
 
+    fn pyright_manifest() -> Manifest {
+        let toml = r#"
+[plugin]
+name = "mock-plugin"
+plugin_id = "mock"
+version = "0.1.0"
+protocol_version = "1.0"
+executable = "mock-plugin"
+language = "mock"
+extensions = ["mock"]
+
+[capabilities.runtime]
+expected_max_rss_mb = 2048
+expected_entities_per_file = 100
+wardline_aware = false
+reads_outside_project_root = false
+
+[capabilities.runtime.pyright]
+pin = "1.1.409"
+
+[ontology]
+entity_kinds = ["module", "function"]
+edge_kinds = ["contains", "calls"]
+rule_id_prefix = "CLA-MOCK-"
+ontology_version = "0.4.0"
+"#;
+        crate::plugin::parse_manifest(toml.as_bytes()).expect("valid pyright manifest")
+    }
+
     fn reads_outside_manifest() -> Manifest {
         let toml = r#"
 [plugin]
@@ -1428,6 +1472,15 @@ rule_id_prefix = "CLA-MOCK-"
 ontology_version = "0.1.0"
 "#;
         crate::plugin::parse_manifest(toml.as_bytes()).expect("valid reads-outside manifest")
+    }
+
+    #[test]
+    fn pyright_runtime_raises_process_ceiling_for_language_server() {
+        assert_eq!(
+            effective_max_nproc(&compliant_manifest()),
+            DEFAULT_MAX_NPROC
+        );
+        assert_eq!(effective_max_nproc(&pyright_manifest()), PYRIGHT_MAX_NPROC);
     }
 
     // ── Full end-to-end helper ────────────────────────────────────────────────

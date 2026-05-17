@@ -4,7 +4,8 @@
 # Runs the README §3 demo script end-to-end and verifies:
 #   - `clarion install` creates `.clarion/clarion.db`
 #   - `clarion analyze .` spawns the Python plugin and persists at least one entity
-#   - `sqlite3 .clarion/clarion.db` returns `python:function:demo.hello|function`
+#   - `sqlite3 .clarion/clarion.db` returns Python module/function entities
+#   - resolved and ambiguous calls edges are persisted end-to-end
 #
 # Dependencies: cargo, Python 3.11+, sqlite3 CLI.
 #
@@ -49,7 +50,21 @@ DEMO_DIR="$(mktemp -d -t clarion-demo-XXXXXX)"
 trap 'rm -rf "$DEMO_DIR"' EXIT
 log "scratch project: $DEMO_DIR"
 cd "$DEMO_DIR"
-echo 'def hello(): return "world"' > demo.py
+cat > demo.py <<'PY'
+def world():
+    return 42
+
+def z_fallback():
+    return -1
+
+def hello():
+    return world()
+
+DISPATCH = {"k": world, "z": z_fallback}
+
+def via_dispatch(key: str = "k"):
+    return DISPATCH[key]()
+PY
 
 # ── 4. PATH wiring — clarion + plugin binary ────────────────────────────────
 export PATH="$REPO_ROOT/target/release:$VENV/bin:$PATH"
@@ -67,9 +82,11 @@ clarion analyze .
 log "verifying persisted entity via sqlite3 ..."
 RESULT=$(sqlite3 "$DEMO_DIR/.clarion/clarion.db" "select id, kind from entities order by id;")
 # B.2 (Sprint 2): every analyzed file emits a module entity in addition to
-# its function/class entities. The demo file `def hello(): return "world"`
-# produces exactly two rows.
+# its function/class entities. B.4* adds direct and dict-dispatch call sites.
 EXPECTED="python:function:demo.hello|function
+python:function:demo.via_dispatch|function
+python:function:demo.world|function
+python:function:demo.z_fallback|function
 python:module:demo|module"
 
 if [ "$RESULT" != "$EXPECTED" ]; then
@@ -81,8 +98,11 @@ fi
 # ── 8. Verify contains edge via sqlite3 (B.3) ────────────────────────────────
 log "verifying persisted contains edge via sqlite3 ..."
 EDGE_RESULT=$(sqlite3 "$DEMO_DIR/.clarion/clarion.db" \
-    "select kind, from_id, to_id from edges order by from_id, to_id;")
-EDGE_EXPECTED="contains|python:module:demo|python:function:demo.hello"
+    "select kind, from_id, to_id from edges where kind = 'contains' order by from_id, to_id;")
+EDGE_EXPECTED="contains|python:module:demo|python:function:demo.hello
+contains|python:module:demo|python:function:demo.via_dispatch
+contains|python:module:demo|python:function:demo.world
+contains|python:module:demo|python:function:demo.z_fallback"
 
 if [ "$EDGE_RESULT" != "$EDGE_EXPECTED" ]; then
     log "DB edge contents:"
@@ -90,14 +110,14 @@ if [ "$EDGE_RESULT" != "$EDGE_EXPECTED" ]; then
     fail "expected edge row:\n$EDGE_EXPECTED\ngot:\n$EDGE_RESULT"
 fi
 
-# ── 9. Verify run stats include edges_inserted == 1 (B.3 §6) ─────────────────
-log "verifying run stats include edges_inserted == 1 ..."
+# ── 9. Verify run stats include edges_inserted == 6 (B.3 §6 + B.4*) ──────────
+log "verifying run stats include edges_inserted == 6 ..."
 EDGES_INSERTED=$(sqlite3 "$DEMO_DIR/.clarion/clarion.db" \
     "select json_extract(stats, '\$.edges_inserted') from runs where status = 'completed';")
-if [ "$EDGES_INSERTED" != "1" ]; then
+if [ "$EDGES_INSERTED" != "6" ]; then
     log "runs row:"
     sqlite3 "$DEMO_DIR/.clarion/clarion.db" "select id, status, stats from runs;" >&2 || true
-    fail "expected runs.stats.edges_inserted == 1; got $EDGES_INSERTED"
+    fail "expected runs.stats.edges_inserted == 6; got $EDGES_INSERTED"
 fi
 
 # ── 10. Verify dropped_edges_total == 0 (B.3 §6 / §9 exit criterion 6) ───────
@@ -110,4 +130,41 @@ if [ "$DROPPED" != "0" ]; then
     fail "expected runs.stats.dropped_edges_total == 0; got $DROPPED"
 fi
 
-log "PASS: walking skeleton persisted module + function entities + contains edge"
+# ── 11. Verify resolved + ambiguous calls edges (B.4*) ───────────────────────
+log "verifying persisted resolved calls edge ..."
+RESOLVED_CALLS=$(sqlite3 "$DEMO_DIR/.clarion/clarion.db" \
+    "select count(*) from edges where kind = 'calls' and confidence = 'resolved';")
+if [ "$RESOLVED_CALLS" -lt 1 ]; then
+    log "DB edge contents:"
+    sqlite3 "$DEMO_DIR/.clarion/clarion.db" "select kind, from_id, to_id, confidence, properties from edges order by kind, from_id, to_id;" >&2 || true
+    fail "expected at least one resolved calls edge; got $RESOLVED_CALLS"
+fi
+
+log "verifying persisted ambiguous calls edge with properties.candidates ..."
+AMBIGUOUS_WITH_CANDIDATES=$(sqlite3 "$DEMO_DIR/.clarion/clarion.db" \
+    "select count(*) from edges where kind = 'calls' and confidence = 'ambiguous' and json_type(properties, '\$.candidates') = 'array';")
+if [ "$AMBIGUOUS_WITH_CANDIDATES" -lt 1 ]; then
+    log "DB edge contents:"
+    sqlite3 "$DEMO_DIR/.clarion/clarion.db" "select kind, from_id, to_id, confidence, properties from edges order by kind, from_id, to_id;" >&2 || true
+    fail "expected at least one ambiguous calls edge with properties.candidates; got $AMBIGUOUS_WITH_CANDIDATES"
+fi
+
+log "verifying run stats include ambiguous_edges_total >= 1 ..."
+AMBIGUOUS_EDGES=$(sqlite3 "$DEMO_DIR/.clarion/clarion.db" \
+    "select json_extract(stats, '\$.ambiguous_edges_total') from runs where status = 'completed';")
+if [ "$AMBIGUOUS_EDGES" -lt 1 ]; then
+    log "runs row:"
+    sqlite3 "$DEMO_DIR/.clarion/clarion.db" "select id, status, stats from runs;" >&2 || true
+    fail "expected runs.stats.ambiguous_edges_total >= 1; got $AMBIGUOUS_EDGES"
+fi
+
+log "verifying run stats include unresolved_call_sites_total == 0 ..."
+UNRESOLVED_CALL_SITES=$(sqlite3 "$DEMO_DIR/.clarion/clarion.db" \
+    "select json_extract(stats, '\$.unresolved_call_sites_total') from runs where status = 'completed';")
+if [ "$UNRESOLVED_CALL_SITES" != "0" ]; then
+    log "runs row:"
+    sqlite3 "$DEMO_DIR/.clarion/clarion.db" "select id, status, stats from runs;" >&2 || true
+    fail "expected runs.stats.unresolved_call_sites_total == 0; got $UNRESOLVED_CALL_SITES"
+fi
+
+log "PASS: walking skeleton persisted module + function entities + contains + calls edges"
