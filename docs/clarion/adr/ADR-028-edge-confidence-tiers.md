@@ -162,7 +162,7 @@ Compute inferred edges for every unresolved site during `clarion analyze`.
 
 ## Open Questions
 
-- **Storage location for inferred edges** — same `edges` table with `confidence='inferred'` rows, or separate `inferred_edges_cache` table? Decision deferred to B.4* implementation pass. Both shapes are compatible with this ADR's wire and tier definitions.
+- **Storage location for inferred edges** — RESOLVED by the B.4* design Q5: inferred edges use the same `edges` table with `confidence='inferred'` rows. If this is reversed later, B.4* Q5 sketches the additive migration (`0002_split_inferred_edges.sql`) to `inferred_edges_cache` plus the MCP query UNION refactor; no in-place migration remains available after B.4* publishes edge rows.
 - **Inference-result longevity** — when does an inferred edge become stale? Caller content hash changes invalidate; candidate target content-hash changes also invalidate? Decision deferred to ADR-030 (on-demand summary scope) — same cache-staleness reasoning applies to both.
 - **Per-model confidence-tier mapping** — if Haiku produces an inference and Sonnet produces a different inference for the same caller, are both stored? Initial answer: keyed on `model_id`, so yes; query path returns the model the operator's `clarion.yaml` names as the inference tier. Refinable in ADR-030.
 
