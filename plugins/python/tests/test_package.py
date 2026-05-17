@@ -6,4 +6,4 @@ import clarion_plugin_python
 
 
 def test_package_version_matches_pyproject() -> None:
-    assert clarion_plugin_python.__version__ == "0.1.2"
+    assert clarion_plugin_python.__version__ == "0.1.3"
