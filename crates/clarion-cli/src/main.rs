@@ -1,6 +1,7 @@
 mod analyze;
 mod cli;
 mod install;
+mod stats;
 
 use anyhow::Result;
 use clap::Parser;

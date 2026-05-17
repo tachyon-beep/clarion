@@ -99,6 +99,10 @@ while True:
                         "confidence": "ambiguous",
                     },
                 ],
+                "stats": {
+                    "unresolved_call_sites_total": 2,
+                    "pyright_query_latency_ms": list(range(10, 1010, 10)),
+                },
             },
         })
     elif method == "shutdown":
@@ -238,6 +242,16 @@ fn analyze_stats_reports_ambiguous_edges_total() {
     assert!(
         stats["ambiguous_edges_total"].as_u64().unwrap_or_default() > 0,
         "ambiguous_edges_total should be > 0 after ambiguous calls edge; got {stats_raw}"
+    );
+    assert_eq!(
+        stats["unresolved_call_sites_total"].as_u64(),
+        Some(2),
+        "unresolved_call_sites_total should aggregate plugin stats; got {stats_raw}"
+    );
+    assert_eq!(
+        stats["pyright_query_latency_p95_ms"].as_u64(),
+        Some(950),
+        "pyright_query_latency_p95_ms should be the deterministic p95; got {stats_raw}"
     );
 }
 

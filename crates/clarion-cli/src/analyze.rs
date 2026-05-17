@@ -25,6 +25,8 @@ use clarion_storage::{
     commands::{EdgeRecord, EntityRecord, RunStatus, WriterCmd},
 };
 
+use crate::stats::P95Accumulator;
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Run the analyze command against `project_path`.
@@ -137,7 +139,15 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                 run_id: run_id.clone(),
                 status: RunStatus::SkippedNoPlugins,
                 completed_at: completed_at.clone(),
-                stats_json: r#"{"entities_inserted":0}"#.into(),
+                stats_json: serde_json::json!({
+                    "entities_inserted": 0,
+                    "edges_inserted": 0,
+                    "dropped_edges_total": 0,
+                    "ambiguous_edges_total": 0,
+                    "unresolved_call_sites_total": 0,
+                    "pyright_query_latency_p95_ms": 0,
+                })
+                .to_string(),
                 ack,
             })
             .await
@@ -181,6 +191,8 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
     // layer is unusable for the rest of this run.
     let mut total_entity_count: u64 = 0;
     let mut total_edge_count: u64 = 0;
+    let mut unresolved_call_sites_total: u64 = 0;
+    let mut pyright_latency = P95Accumulator::default();
     let mut run_outcome: RunOutcome = RunOutcome::Completed;
     let mut breaker = CrashLoopBreaker::default();
     let mut crash_reasons: Vec<String> = Vec::new();
@@ -270,8 +282,12 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
             Ok(BatchResult {
                 entities,
                 edges,
+                stats,
                 findings,
             }) => {
+                unresolved_call_sites_total += stats.unresolved_call_sites_total;
+                pyright_latency.record_many(stats.pyright_query_latency_ms);
+
                 // Log findings individually (Tier B persistence is future
                 // work). Logging only the count leaves operators guessing
                 // whether the plugin tripped an ontology check, emitted
@@ -384,6 +400,7 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
     let ambiguous_edges_total = writer
         .ambiguous_edges_total
         .load(std::sync::atomic::Ordering::Relaxed) as u64;
+    let pyright_query_latency_p95_ms = pyright_latency.p95_ms();
     // Extract the failure reason (if any) before the match consumes run_outcome.
     let fail_reason: Option<String> = match &run_outcome {
         RunOutcome::SoftFailed { reason } | RunOutcome::HardFailed { reason } => {
@@ -399,6 +416,8 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                 "edges_inserted": total_edge_count,
                 "dropped_edges_total": dropped_edges_total,
                 "ambiguous_edges_total": ambiguous_edges_total,
+                "unresolved_call_sites_total": unresolved_call_sites_total,
+                "pyright_query_latency_p95_ms": pyright_query_latency_p95_ms,
             })
             .to_string();
             writer
@@ -423,6 +442,8 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                 "edges_inserted": total_edge_count,
                 "dropped_edges_total": dropped_edges_total,
                 "ambiguous_edges_total": ambiguous_edges_total,
+                "unresolved_call_sites_total": unresolved_call_sites_total,
+                "pyright_query_latency_p95_ms": pyright_query_latency_p95_ms,
                 "failure_reason": reason,
             })
             .to_string();
@@ -530,11 +551,23 @@ struct BatchResult {
     /// `(descriptor, record)` pairs for every accepted edge — descriptor is
     /// `"(kind from_id -> to_id)"` for diagnostic messages on insert failure.
     edges: Vec<(String, EdgeRecord)>,
+    /// Per-file observability stats reported by the plugin and folded by the CLI.
+    stats: BatchStats,
     /// Findings accumulated by the host during the session.
     findings: Vec<clarion_core::HostFinding>,
 }
 
-type Collected = (Vec<(String, EntityRecord)>, Vec<(String, EdgeRecord)>);
+#[derive(Debug, Default)]
+struct BatchStats {
+    unresolved_call_sites_total: u64,
+    pyright_query_latency_ms: Vec<u64>,
+}
+
+type Collected = (
+    Vec<(String, EntityRecord)>,
+    Vec<(String, EdgeRecord)>,
+    BatchStats,
+);
 
 /// Spawn the plugin, handshake, run `analyze_file` for each file, collect results.
 ///
@@ -567,10 +600,19 @@ fn run_plugin_blocking(
     let work_result: Result<Collected, String> = (|| {
         let mut collected_entities: Vec<(String, EntityRecord)> = Vec::new();
         let mut collected_edges: Vec<(String, EdgeRecord)> = Vec::new();
+        let mut collected_stats = BatchStats::default();
         for file in files {
-            let AnalyzeFileOutcome { entities, edges } = host
+            let AnalyzeFileOutcome {
+                entities,
+                edges,
+                stats,
+            } = host
                 .analyze_file(file)
                 .map_err(|e| classify_host_error(plugin_id, e))?;
+            collected_stats.unresolved_call_sites_total += stats.unresolved_call_sites_total;
+            collected_stats
+                .pyright_query_latency_ms
+                .extend(stats.pyright_query_latency_ms);
             for entity in &entities {
                 let id_str = entity.id.to_string();
                 let record = map_entity_to_record(entity, plugin_id);
@@ -587,7 +629,7 @@ fn run_plugin_blocking(
                 collected_edges.push((descr, record));
             }
         }
-        Ok((collected_entities, collected_edges))
+        Ok((collected_entities, collected_edges, collected_stats))
     })();
 
     // Try a graceful shutdown on the happy path; on error, skip straight to
@@ -614,9 +656,10 @@ fn run_plugin_blocking(
     reap_and_classify_exit(&mut child, plugin_id, &mut findings);
 
     match work_result {
-        Ok((entities, edges)) => Ok(BatchResult {
+        Ok((entities, edges, stats)) => Ok(BatchResult {
             entities,
             edges,
+            stats,
             findings,
         }),
         Err(reason) => Err(reason),
@@ -949,6 +992,7 @@ mod tests {
         let br = BatchResult {
             entities: Vec::new(),
             edges: Vec::new(),
+            stats: BatchStats::default(),
             findings: Vec::new(),
         };
         let out = handle_plugin_task_join_result(Ok(Ok(br)), "python");

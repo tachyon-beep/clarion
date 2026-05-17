@@ -43,9 +43,9 @@ use crate::plugin::limits::{
 };
 use crate::plugin::manifest::{Manifest, ManifestError};
 use crate::plugin::protocol::{
-    AnalyzeFileParams, AnalyzeFileResult, EdgeConfidence, ExitNotification, InitializeParams,
-    InitializeResult, InitializedNotification, ProtocolError, ResponseEnvelope, ResponsePayload,
-    ShutdownParams, make_notification, make_request,
+    AnalyzeFileParams, AnalyzeFileResult, AnalyzeFileStats, EdgeConfidence, ExitNotification,
+    InitializeParams, InitializeResult, InitializedNotification, ProtocolError, ResponseEnvelope,
+    ResponsePayload, ShutdownParams, make_notification, make_request,
 };
 use crate::plugin::transport::{Frame, TransportError, read_frame, write_frame};
 
@@ -332,6 +332,7 @@ pub struct AcceptedEdge {
 pub struct AnalyzeFileOutcome {
     pub entities: Vec<AcceptedEntity>,
     pub edges: Vec<AcceptedEdge>,
+    pub stats: AnalyzeFileStats,
 }
 
 // ── Error types ───────────────────────────────────────────────────────────────
@@ -1113,6 +1114,7 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
         Ok(AnalyzeFileOutcome {
             entities: accepted,
             edges: accepted_edges,
+            stats: afr.stats,
         })
     }
 

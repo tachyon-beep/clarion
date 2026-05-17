@@ -350,6 +350,23 @@ pub struct AnalyzeFileParams {
     pub file_path: String,
 }
 
+/// Run-observability counters emitted per `analyze_file` result.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnalyzeFileStats {
+    /// Call sites where the plugin found no in-project candidate.
+    #[serde(default)]
+    pub unresolved_call_sites_total: u64,
+    /// Raw latency samples (milliseconds) for per-file Pyright LSP queries.
+    #[serde(default)]
+    pub pyright_query_latency_ms: Vec<u64>,
+}
+
+impl AnalyzeFileStats {
+    fn is_empty(&self) -> bool {
+        self.unresolved_call_sites_total == 0 && self.pyright_query_latency_ms.is_empty()
+    }
+}
+
 /// Result for `analyze_file` (plugin → core).
 ///
 /// `entities` is `Vec<serde_json::Value>` as a Sprint 1 placeholder; per-element
@@ -370,6 +387,9 @@ pub struct AnalyzeFileResult {
     /// addition non-breaking for Sprint-1 plugins.
     #[serde(default)]
     pub edges: Vec<Value>,
+    /// Observability counters and samples. Defaults keep pre-B.4 plugins valid.
+    #[serde(default, skip_serializing_if = "AnalyzeFileStats::is_empty")]
+    pub stats: AnalyzeFileStats,
 }
 
 // ── shutdown ──────────────────────────────────────────────────────────────────
@@ -610,6 +630,10 @@ mod tests {
                 "from_id": "python:module:m",
                 "to_id": "python:function:m.main",
             })],
+            stats: AnalyzeFileStats {
+                unresolved_call_sites_total: 2,
+                pyright_query_latency_ms: vec![10, 20, 30],
+            },
         };
         let back: AnalyzeFileResult =
             serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
@@ -623,6 +647,14 @@ mod tests {
         assert!(
             back.edges.is_empty(),
             "missing edges field must default to empty vec"
+        );
+        assert_eq!(
+            back.stats.unresolved_call_sites_total, 0,
+            "missing stats field must default unresolved-call-site counter to zero"
+        );
+        assert!(
+            back.stats.pyright_query_latency_ms.is_empty(),
+            "missing stats field must default pyright latency samples to empty"
         );
 
         // shutdown params (empty)

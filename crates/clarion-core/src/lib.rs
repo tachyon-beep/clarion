@@ -17,6 +17,7 @@ pub use plugin::{
     AcceptedEdge,
     AcceptedEntity,
     AnalyzeFileOutcome,
+    AnalyzeFileStats,
     CapExceeded,
     // breaker (Task 7) — callers drive crash-loop accounting
     CrashLoopBreaker,
