@@ -75,11 +75,14 @@ CREATE TABLE edges (
     source_file_id     TEXT REFERENCES entities(id),
     source_byte_start  INTEGER,
     source_byte_end    INTEGER,
+    confidence         TEXT NOT NULL DEFAULT 'resolved'
+                       CHECK (confidence IN ('resolved', 'ambiguous', 'inferred')),
     PRIMARY KEY (kind, from_id, to_id)
 ) WITHOUT ROWID;
 CREATE INDEX ix_edges_from_kind ON edges(from_id, kind);
 CREATE INDEX ix_edges_to_kind   ON edges(to_id,   kind);
 CREATE INDEX ix_edges_kind      ON edges(kind);
+CREATE INDEX ix_edges_kind_confidence ON edges(kind, confidence);
 
 -- Findings
 CREATE TABLE findings (

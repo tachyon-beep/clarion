@@ -344,6 +344,48 @@ fn edges_table_is_without_rowid() {
 }
 
 #[test]
+fn edges_confidence_column_rejects_unknown_tier() {
+    // ADR-028 decision 1: every edge row carries a confidence tier, constrained
+    // to resolved / ambiguous / inferred so traversal filters are trustworthy.
+    let tempdir = tempfile::tempdir().unwrap();
+    let conn = open_fresh(&tempdir);
+    for id in ["python:function:demo.a", "python:function:demo.b"] {
+        conn.execute(
+            "INSERT INTO entities (id, plugin_id, kind, name, short_name, properties, \
+             created_at, updated_at) \
+             VALUES (?1, 'python', 'function', ?1, ?1, '{}', \
+             strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![id],
+        )
+        .unwrap();
+    }
+    let err = conn
+        .execute(
+            "INSERT INTO edges (kind, from_id, to_id, confidence) \
+             VALUES ('contains', 'python:function:demo.a', 'python:function:demo.b', 'garbage')",
+            [],
+        )
+        .expect_err("confidence CHECK should reject unknown edge tiers");
+    assert!(
+        err.to_string().contains("CHECK constraint failed"),
+        "unexpected error for invalid confidence tier: {err}"
+    );
+}
+
+#[test]
+fn migration_0001_creates_edge_confidence_index() {
+    // B.4* Q5: B.6's confidence-filtered traversals must not degrade to a full
+    // scan; this index is the storage-side dispatch primitive.
+    let tempdir = tempfile::tempdir().unwrap();
+    let conn = open_fresh(&tempdir);
+    let indexes = index_names(&conn);
+    assert!(
+        indexes.iter().any(|i| i == "ix_edges_kind_confidence"),
+        "missing ix_edges_kind_confidence in {indexes:?}"
+    );
+}
+
+#[test]
 fn migrations_are_idempotent() {
     let tempdir = tempfile::tempdir().unwrap();
     let mut conn = open_fresh(&tempdir);
