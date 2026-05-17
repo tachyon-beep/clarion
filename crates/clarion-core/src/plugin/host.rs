@@ -43,9 +43,9 @@ use crate::plugin::limits::{
 };
 use crate::plugin::manifest::{Manifest, ManifestError};
 use crate::plugin::protocol::{
-    AnalyzeFileParams, AnalyzeFileResult, ExitNotification, InitializeParams, InitializeResult,
-    InitializedNotification, ProtocolError, ResponseEnvelope, ResponsePayload, ShutdownParams,
-    make_notification, make_request,
+    AnalyzeFileParams, AnalyzeFileResult, EdgeConfidence, ExitNotification, InitializeParams,
+    InitializeResult, InitializedNotification, ProtocolError, ResponseEnvelope, ResponsePayload,
+    ShutdownParams, make_notification, make_request,
 };
 use crate::plugin::transport::{Frame, TransportError, read_frame, write_frame};
 
@@ -187,6 +187,10 @@ pub struct RawEdge {
     /// End byte offset; same per-kind contract as `source_byte_start`.
     #[serde(default)]
     pub source_byte_end: Option<i64>,
+    /// Confidence tier for this edge. Defaults to resolved so B.3-era plugins
+    /// that omit the field keep emitting structural edges correctly.
+    #[serde(default)]
+    pub confidence: EdgeConfidence,
     /// Edge-kind-specific properties (e.g. `decorated_by.stack_index`).
     /// Round-trips as JSON; writer inserts verbatim.
     #[serde(default)]
@@ -314,6 +318,8 @@ pub struct AcceptedEdge {
     /// the plugin emitted a module entity. Derived host-side (ADR-022
     /// boundary: plugin does not encode the file entity id formula).
     pub source_file_id: Option<String>,
+    /// Confidence tier from the plugin wire.
+    pub confidence: EdgeConfidence,
     /// The original raw edge (downstream consumers convert to `EdgeRecord`).
     pub raw: RawEdge,
 }
@@ -1159,6 +1165,7 @@ impl<R: BufRead, W: Write> PluginHost<R, W> {
                 from_id: raw.from_id.clone(),
                 to_id: raw.to_id.clone(),
                 source_file_id: module_entity_id.clone(),
+                confidence: raw.confidence,
                 raw,
             });
         }
@@ -1367,6 +1374,32 @@ rule_id_prefix = "CLA-MOCK-"
 ontology_version = "0.1.0"
 "#;
         crate::plugin::parse_manifest(toml.as_bytes()).expect("valid compliant manifest")
+    }
+
+    fn calls_manifest() -> Manifest {
+        let toml = r#"
+[plugin]
+name = "mock-plugin"
+plugin_id = "mock"
+version = "0.1.0"
+protocol_version = "1.0"
+executable = "mock-plugin"
+language = "mock"
+extensions = ["mock"]
+
+[capabilities.runtime]
+expected_max_rss_mb = 256
+expected_entities_per_file = 100
+wardline_aware = false
+reads_outside_project_root = false
+
+[ontology]
+entity_kinds = ["module", "function"]
+edge_kinds = ["contains", "calls"]
+rule_id_prefix = "CLA-MOCK-"
+ontology_version = "0.4.0"
+"#;
+        crate::plugin::parse_manifest(toml.as_bytes()).expect("valid calls manifest")
     }
 
     fn reads_outside_manifest() -> Manifest {
@@ -2617,6 +2650,72 @@ ontology_version = "0.1.0"
             count, 1,
             "expected exactly one FINDING_ENTITY_ID_MISMATCH; got {count} in {findings:?}"
         );
+    }
+
+    #[test]
+    fn raw_edge_confidence_survives_host_round_trip() {
+        let manifest = calls_manifest();
+        let mut mock = MockPlugin::new_compliant();
+        let (mut host, project_dir) = connect_and_handshake(manifest, &mut mock);
+
+        let sample = project_dir.path().join("demo.mock");
+        std::fs::write(&sample, b"").unwrap();
+
+        let response_id = host.next_request_id_test();
+        let sample_path = sample.to_string_lossy().into_owned();
+        let response_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": response_id,
+            "result": {
+                "entities": [
+                    {
+                        "id": "mock:module:demo",
+                        "kind": "module",
+                        "qualified_name": "demo",
+                        "source": { "file_path": sample_path }
+                    },
+                    {
+                        "id": "mock:function:demo.caller",
+                        "kind": "function",
+                        "qualified_name": "demo.caller",
+                        "source": { "file_path": sample_path },
+                        "parent_id": "mock:module:demo"
+                    },
+                    {
+                        "id": "mock:function:demo.callee",
+                        "kind": "function",
+                        "qualified_name": "demo.callee",
+                        "source": { "file_path": sample_path },
+                        "parent_id": "mock:module:demo"
+                    }
+                ],
+                "edges": [{
+                    "kind": "calls",
+                    "from_id": "mock:function:demo.caller",
+                    "to_id": "mock:function:demo.callee",
+                    "source_byte_start": 12,
+                    "source_byte_end": 18,
+                    "confidence": "ambiguous"
+                }]
+            }
+        });
+        let body = serde_json::to_vec(&response_json).unwrap();
+        {
+            let reader = host.reader_mut_test();
+            let pos_before = reader.position();
+            let old_end = reader.get_ref().len() as u64;
+            let mut framed: Vec<u8> = Vec::new();
+            write_frame(&mut framed, &Frame { body }).unwrap();
+            reader.get_mut().extend_from_slice(&framed);
+            if pos_before == old_end {
+                reader.set_position(old_end);
+            }
+        }
+
+        let result = host.analyze_file(&sample).expect("must not error");
+        assert_eq!(result.edges.len(), 1);
+        assert_eq!(result.edges[0].confidence, EdgeConfidence::Ambiguous);
+        assert_eq!(result.edges[0].raw.confidence, EdgeConfidence::Ambiguous);
     }
 
     // ── Drain-until-match: stale frames discarded, matching accepted ─────────
