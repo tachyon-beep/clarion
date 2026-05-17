@@ -22,7 +22,7 @@ use clarion_core::{
 };
 use clarion_storage::{
     DEFAULT_BATCH_SIZE, DEFAULT_CHANNEL_CAPACITY, Writer,
-    commands::{EdgeConfidence, EdgeRecord, EntityRecord, RunStatus, WriterCmd},
+    commands::{EdgeRecord, EntityRecord, RunStatus, WriterCmd},
 };
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -381,6 +381,9 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
     let dropped_edges_total = writer
         .dropped_edges_total
         .load(std::sync::atomic::Ordering::Relaxed) as u64;
+    let ambiguous_edges_total = writer
+        .ambiguous_edges_total
+        .load(std::sync::atomic::Ordering::Relaxed) as u64;
     // Extract the failure reason (if any) before the match consumes run_outcome.
     let fail_reason: Option<String> = match &run_outcome {
         RunOutcome::SoftFailed { reason } | RunOutcome::HardFailed { reason } => {
@@ -395,6 +398,7 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                 "entities_inserted": total_entity_count,
                 "edges_inserted": total_edge_count,
                 "dropped_edges_total": dropped_edges_total,
+                "ambiguous_edges_total": ambiguous_edges_total,
             })
             .to_string();
             writer
@@ -418,6 +422,7 @@ pub async fn run(project_path: PathBuf) -> Result<()> {
                 "entities_inserted": total_entity_count,
                 "edges_inserted": total_edge_count,
                 "dropped_edges_total": dropped_edges_total,
+                "ambiguous_edges_total": ambiguous_edges_total,
                 "failure_reason": reason,
             })
             .to_string();
@@ -750,7 +755,7 @@ fn map_edge_to_record(edge: AcceptedEdge) -> EdgeRecord {
         kind: edge.kind,
         from_id: edge.from_id,
         to_id: edge.to_id,
-        confidence: EdgeConfidence::Resolved,
+        confidence: edge.confidence,
         properties_json,
         source_file_id: edge.source_file_id,
         source_byte_start: edge.raw.source_byte_start,
