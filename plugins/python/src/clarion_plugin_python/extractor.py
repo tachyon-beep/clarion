@@ -57,13 +57,21 @@ from __future__ import annotations
 
 import ast
 import sys
+from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict, cast
 
+from clarion_plugin_python.call_resolver import (
+    CallResolutionResult,
+    CallResolver,
+    CallsEdgeProperties,
+    NoOpCallResolver,
+)
 from clarion_plugin_python.entity_id import entity_id
 from clarion_plugin_python.qualname import reconstruct_qualname
 
 _PLUGIN_ID = "python"
+_NOOP_CALL_RESOLVER = NoOpCallResolver()
 
 
 class SourceRange(TypedDict):
@@ -112,6 +120,15 @@ class RawEdge(TypedDict):
     to_id: str
     source_byte_start: NotRequired[int]
     source_byte_end: NotRequired[int]
+    confidence: NotRequired[Literal["resolved", "ambiguous", "inferred"]]
+    properties: NotRequired[CallsEdgeProperties]
+
+
+@dataclass
+class ExtractResult:
+    entities: list[RawEntity]
+    edges: list[RawEdge]
+    stats: CallResolutionResult
 
 
 def _module_source_range(source: str) -> SourceRange:
@@ -183,8 +200,25 @@ def extract(
     file_path: str,
     *,
     module_prefix_path: str | None = None,
+    call_resolver: CallResolver = _NOOP_CALL_RESOLVER,
 ) -> tuple[list[RawEntity], list[RawEdge]]:
-    """Return (entities, edges) extracted from ``source``.
+    result = extract_with_stats(
+        source,
+        file_path,
+        module_prefix_path=module_prefix_path,
+        call_resolver=call_resolver,
+    )
+    return result.entities, result.edges
+
+
+def extract_with_stats(
+    source: str,
+    file_path: str,
+    *,
+    module_prefix_path: str | None = None,
+    call_resolver: CallResolver = _NOOP_CALL_RESOLVER,
+) -> ExtractResult:
+    """Return extracted entities/edges plus resolver observability stats.
 
     Always emits exactly one module entity (B.2 Q1) prepended to the
     entity list; functions and classes follow. B.3 also emits one
@@ -210,7 +244,7 @@ def extract(
             f"clarion-plugin-python: skipping {file_path}: "
             f"top-level __init__.py has no package name\n",
         )
-        return [], []
+        return ExtractResult([], [], CallResolutionResult())
 
     try:
         tree = ast.parse(source)
@@ -219,13 +253,29 @@ def extract(
             f"clarion-plugin-python: skipping {file_path}: syntax error at "
             f"line {exc.lineno}: {exc.msg}\n",
         )
-        return [_build_module_entity(source, dotted_module, file_path, "syntax_error")], []
+        return ExtractResult(
+            [_build_module_entity(source, dotted_module, file_path, "syntax_error")],
+            [],
+            CallResolutionResult(),
+        )
 
     module_entity = _build_module_entity(source, dotted_module, file_path, "ok")
     entities: list[RawEntity] = [module_entity]
     edges: list[RawEdge] = []
-    _walk(tree, [tree], dotted_module, file_path, module_entity["id"], entities, edges)
-    return entities, edges
+    function_ids: list[str] = []
+    _walk(
+        tree,
+        [tree],
+        dotted_module,
+        file_path,
+        module_entity["id"],
+        entities,
+        edges,
+        function_ids,
+    )
+    stats = call_resolver.resolve_calls(file_path, function_ids)
+    edges.extend(cast("list[RawEdge]", stats.edges))
+    return ExtractResult(entities, edges, stats)
 
 
 def _walk(  # noqa: PLR0913 - recursive walker needs both accumulators + parent context (B.3)
@@ -236,6 +286,7 @@ def _walk(  # noqa: PLR0913 - recursive walker needs both accumulators + parent 
     parent_entity_id: str,
     out_entities: list[RawEntity],
     out_edges: list[RawEdge],
+    out_function_ids: list[str],
 ) -> None:
     """Recursively walk ``node``'s AST children, emitting entities + contains edges.
 
@@ -255,6 +306,7 @@ def _walk(  # noqa: PLR0913 - recursive walker needs both accumulators + parent 
                 )
                 out_entities.append(entity)
                 out_edges.append(_contains_edge(parent_entity_id, child_id))
+                out_function_ids.append(child_id)
                 new_parent_id = child_id
             case ast.ClassDef():
                 entity, child_id = _build_class_entity(
@@ -271,6 +323,7 @@ def _walk(  # noqa: PLR0913 - recursive walker needs both accumulators + parent 
             new_parent_id,
             out_entities,
             out_edges,
+            out_function_ids,
         )
 
 

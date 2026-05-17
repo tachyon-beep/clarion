@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from clarion_plugin_python import __version__
-from clarion_plugin_python.extractor import extract
+from clarion_plugin_python.extractor import extract_with_stats
 from clarion_plugin_python.pyright_session import PyrightSession
 from clarion_plugin_python.stdout_guard import install_stdio
 from clarion_plugin_python.wardline_probe import probe as wardline_probe
@@ -195,8 +195,17 @@ def handle_analyze_file(params: dict[str, Any], state: ServerState) -> dict[str,
     # (which canonicalises against project_root) sees the original path.
     # Derive qualified-name dotting from the project-relative form.
     module_prefix = _resolve_module_path(file_path_raw, state)
-    entities, edges = extract(source, file_path_raw, module_prefix_path=module_prefix)
-    return {"entities": entities, "edges": edges, "stats": empty_stats}
+    result = extract_with_stats(
+        source,
+        file_path_raw,
+        module_prefix_path=module_prefix,
+        call_resolver=state.pyright,
+    )
+    stats = {
+        "unresolved_call_sites_total": result.stats.unresolved_call_sites_total,
+        "pyright_query_latency_ms": result.stats.pyright_query_latency_ms,
+    }
+    return {"entities": result.entities, "edges": result.edges, "stats": stats}
 
 
 Handler = Callable[[dict[str, Any], ServerState], dict[str, Any]]

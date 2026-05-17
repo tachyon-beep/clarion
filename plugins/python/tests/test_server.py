@@ -16,6 +16,7 @@ import textwrap
 from typing import IO, TYPE_CHECKING, Any, cast
 
 from clarion_plugin_python import server as server_module
+from clarion_plugin_python.call_resolver import CallResolutionResult
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -267,6 +268,14 @@ def test_analyze_file_lazy_initializes_pyright(
             self.project_root = project_root
             self.closed = False
 
+        def resolve_calls(
+            self,
+            file_path: str,
+            function_ids: list[str],
+        ) -> CallResolutionResult:
+            _ = (file_path, function_ids)
+            return CallResolutionResult()
+
         def close(self) -> None:
             self.closed = True
 
@@ -279,6 +288,41 @@ def test_analyze_file_lazy_initializes_pyright(
 
     assert isinstance(state.pyright, FakePyrightSession)
     assert state.pyright.project_root == tmp_path
+
+
+def test_analyze_file_reports_call_resolver_stats(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePyrightSession:
+        def __init__(self, project_root: Path) -> None:
+            self.project_root = project_root
+
+        def resolve_calls(
+            self,
+            file_path: str,
+            function_ids: list[str],
+        ) -> CallResolutionResult:
+            _ = (file_path, function_ids)
+            return CallResolutionResult(
+                unresolved_call_sites_total=3,
+                pyright_query_latency_ms=[11, 29],
+            )
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(server_module, "PyrightSession", FakePyrightSession, raising=False)
+    demo = tmp_path / "demo.py"
+    demo.write_text("def caller():\n    print('x')\n", encoding="utf-8")
+    state = server_module.ServerState(initialized=True, project_root=tmp_path)
+
+    response = server_module.handle_analyze_file({"file_path": str(demo)}, state)
+
+    assert response["stats"] == {
+        "unresolved_call_sites_total": 3,
+        "pyright_query_latency_ms": [11, 29],
+    }
 
 
 def test_shutdown_closes_pyright_session() -> None:

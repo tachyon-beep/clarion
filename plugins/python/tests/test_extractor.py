@@ -2,16 +2,90 @@
 
 from __future__ import annotations
 
+import shutil
+import sys
+import textwrap
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pytest
+
+from clarion_plugin_python.call_resolver import CallResolutionResult
 from clarion_plugin_python.extractor import (
+    ExtractResult,
+    RawEdge,
     _module_source_range,
     extract,
+    extract_with_stats,
     module_dotted_name,
 )
+from clarion_plugin_python.pyright_session import PyrightSession
 
 if TYPE_CHECKING:
-    import pytest
+    from collections.abc import Sequence
+
+
+class FakeCallResolver:
+    def resolve_calls(
+        self,
+        file_path: str | Path,
+        function_ids: Sequence[str],
+    ) -> CallResolutionResult:
+        assert file_path == "demo.py"
+        assert function_ids == [
+            "python:function:demo.callee",
+            "python:function:demo.caller",
+        ]
+        return CallResolutionResult(
+            edges=[
+                {
+                    "kind": "calls",
+                    "from_id": "python:function:demo.caller",
+                    "to_id": "python:function:demo.callee",
+                    "confidence": "resolved",
+                    "source_byte_start": 42,
+                    "source_byte_end": 48,
+                },
+            ],
+            unresolved_call_sites_total=2,
+            pyright_query_latency_ms=[17],
+        )
+
+
+@pytest.fixture(scope="session")
+def pyright_langserver() -> str:
+    venv_candidate = Path(sys.executable).parent / "pyright-langserver"
+    if venv_candidate.exists():
+        return str(venv_candidate)
+    resolved = shutil.which("pyright-langserver")
+    if resolved is None:
+        pytest.skip("pyright-langserver is not installed")
+    return resolved
+
+
+def _extract_with_pyright(
+    tmp_path: Path,
+    source: str,
+    pyright_langserver: str,
+    *,
+    name: str = "demo.py",
+) -> ExtractResult:
+    path = tmp_path / name
+    rendered = textwrap.dedent(source).lstrip()
+    if not rendered.endswith("\n"):
+        rendered = f"{rendered}\n"
+    path.write_text(rendered, encoding="utf-8")
+    with PyrightSession(tmp_path, executable=pyright_langserver) as resolver:
+        return extract_with_stats(
+            rendered,
+            str(path),
+            module_prefix_path=name,
+            call_resolver=resolver,
+        )
+
+
+def _call_edges(edges: Sequence[RawEdge]) -> list[RawEdge]:
+    return [edge for edge in edges if edge["kind"] == "calls"]
 
 
 def test_empty_file_yields_one_module_entity() -> None:
@@ -25,6 +99,199 @@ def test_empty_file_yields_one_module_entity() -> None:
     assert entities[0].get("parse_status") == "ok"
     function_entities = [e for e in entities if e["kind"] == "function"]
     assert function_entities == []
+
+
+def test_extractor_with_noop_resolver_emits_no_calls() -> None:
+    entities, edges = extract("def caller():\n    pass\n", "demo.py")
+
+    assert [e["id"] for e in entities if e["kind"] == "function"] == [
+        "python:function:demo.caller",
+    ]
+    assert [edge for edge in edges if edge["kind"] == "calls"] == []
+
+
+def test_extractor_appends_calls_from_resolver_and_carries_stats() -> None:
+    result = extract_with_stats(
+        "def callee():\n    pass\n\ndef caller():\n    callee()\n",
+        "demo.py",
+        call_resolver=FakeCallResolver(),
+    )
+
+    assert [edge for edge in result.edges if edge["kind"] == "calls"] == [
+        {
+            "kind": "calls",
+            "from_id": "python:function:demo.caller",
+            "to_id": "python:function:demo.callee",
+            "confidence": "resolved",
+            "source_byte_start": 42,
+            "source_byte_end": 48,
+        },
+    ]
+    assert result.stats.unresolved_call_sites_total == 2
+    assert result.stats.pyright_query_latency_ms == [17]
+
+
+@pytest.mark.pyright
+def test_extractor_emits_resolved_calls(tmp_path: Path, pyright_langserver: str) -> None:
+    result = _extract_with_pyright(
+        tmp_path,
+        """
+        def callee():
+            pass
+
+        def caller():
+            callee()
+        """,
+        pyright_langserver,
+    )
+
+    calls = _call_edges(result.edges)
+    assert len(calls) == 1
+    assert calls[0]["from_id"] == "python:function:demo.caller"
+    assert calls[0]["to_id"] == "python:function:demo.callee"
+    assert calls[0]["confidence"] == "resolved"
+    assert calls[0]["source_byte_start"] < calls[0]["source_byte_end"]
+
+
+@pytest.mark.pyright
+def test_extractor_emits_ambiguous_calls_with_candidates(
+    tmp_path: Path,
+    pyright_langserver: str,
+) -> None:
+    result = _extract_with_pyright(
+        tmp_path,
+        """
+        from collections.abc import Callable
+
+        def alpha() -> None:
+            pass
+
+        def beta() -> None:
+            pass
+
+        handlers: dict[str, Callable[[], None]] = {"b": beta, "a": alpha}
+
+        def caller(key: str) -> None:
+            handlers[key]()
+        """,
+        pyright_langserver,
+    )
+
+    calls = _call_edges(result.edges)
+    assert calls == [
+        {
+            "kind": "calls",
+            "from_id": "python:function:demo.caller",
+            "to_id": "python:function:demo.alpha",
+            "source_byte_start": calls[0]["source_byte_start"],
+            "source_byte_end": calls[0]["source_byte_end"],
+            "confidence": "ambiguous",
+            "properties": {
+                "candidates": [
+                    "python:function:demo.alpha",
+                    "python:function:demo.beta",
+                ],
+            },
+        },
+    ]
+
+
+@pytest.mark.pyright
+def test_extractor_no_edge_for_unresolved_external_call(
+    tmp_path: Path,
+    pyright_langserver: str,
+) -> None:
+    result = _extract_with_pyright(
+        tmp_path,
+        """
+        import os
+
+        def caller():
+            os.getcwd()
+        """,
+        pyright_langserver,
+    )
+
+    assert _call_edges(result.edges) == []
+    assert result.stats.unresolved_call_sites_total == 1
+
+
+@pytest.mark.pyright
+def test_extractor_async_call_resolves(tmp_path: Path, pyright_langserver: str) -> None:
+    result = _extract_with_pyright(
+        tmp_path,
+        """
+        async def callee():
+            pass
+
+        async def caller():
+            await callee()
+        """,
+        pyright_langserver,
+    )
+
+    calls = _call_edges(result.edges)
+    assert len(calls) == 1
+    assert calls[0]["from_id"] == "python:function:demo.caller"
+    assert calls[0]["to_id"] == "python:function:demo.callee"
+
+
+@pytest.mark.pyright
+def test_extractor_decorated_callable_resolves_when_possible(
+    tmp_path: Path,
+    pyright_langserver: str,
+) -> None:
+    result = _extract_with_pyright(
+        tmp_path,
+        """
+        import functools
+
+        def deco(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                return fn(*args, **kwargs)
+            return wrapper
+
+        @deco
+        def target():
+            pass
+
+        def caller():
+            target()
+        """,
+        pyright_langserver,
+    )
+
+    caller_edges = [
+        edge
+        for edge in _call_edges(result.edges)
+        if edge["from_id"] == "python:function:demo.caller"
+    ]
+    assert caller_edges
+    assert caller_edges[0]["confidence"] in {"resolved", "ambiguous"}
+
+
+@pytest.mark.pyright
+def test_extractor_dunder_call_dispatch(tmp_path: Path, pyright_langserver: str) -> None:
+    result = _extract_with_pyright(
+        tmp_path,
+        """
+        class CallableThing:
+            def __call__(self):
+                pass
+
+        def caller():
+            thing = CallableThing()
+            thing()
+        """,
+        pyright_langserver,
+    )
+
+    assert any(
+        edge["from_id"] == "python:function:demo.caller"
+        and edge["to_id"] == "python:function:demo.CallableThing.__call__"
+        for edge in _call_edges(result.edges)
+    )
 
 
 def test_whitespace_only_file_yields_one_module_entity() -> None:

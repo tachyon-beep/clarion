@@ -75,6 +75,7 @@ class _FunctionIndex:
     by_id: dict[str, _FunctionInfo]
     by_name_position: dict[tuple[int, int], _FunctionInfo]
     by_short_name: dict[str, str]
+    dunder_call_by_class: dict[str, str]
     functions: tuple[_FunctionInfo, ...]
     tree: ast.Module
 
@@ -239,6 +240,8 @@ class PyrightSession:
                                 grouped.setdefault(key, set()).add(to_id)
 
                 for range_key, candidates in _ambiguous_dict_dispatches(index, function).items():
+                    grouped.setdefault(range_key, set()).update(candidates)
+                for range_key, candidates in _dunder_call_dispatches(index, function).items():
                     grouped.setdefault(range_key, set()).update(candidates)
 
                 for range_key in sorted(grouped):
@@ -483,6 +486,8 @@ class PyrightSession:
         target_path = _path_from_uri(raw_uri)
         if target_path is None:
             return None
+        if not target_path.is_relative_to(self.project_root):
+            return None
         index = self._function_index_for_path(target_path)
         key = _range_start_key(raw_selection)
         if key is not None and key in index.by_name_position:
@@ -526,12 +531,14 @@ def _build_function_index(project_root: Path, path: Path, source: str) -> _Funct
     by_id = {function.entity_id: function for function in functions}
     by_name_position = {(function.line, function.character): function for function in functions}
     by_short_name = {function.name: function.entity_id for function in functions}
+    dunder_call_by_class = _dunder_call_targets(functions)
     return _FunctionIndex(
         source=source,
         line_starts=line_starts,
         by_id=by_id,
         by_name_position=by_name_position,
         by_short_name=by_short_name,
+        dunder_call_by_class=dunder_call_by_class,
         functions=tuple(functions),
         tree=tree,
     )
@@ -621,6 +628,28 @@ def _ambiguous_dict_dispatches(
     return visitor.dispatches
 
 
+def _dunder_call_dispatches(
+    index: _FunctionIndex,
+    function: _FunctionInfo,
+) -> dict[tuple[int, int, int, int], set[str]]:
+    if not index.dunder_call_by_class:
+        return {}
+    visitor = _DunderCallDispatchVisitor(index.dunder_call_by_class)
+    for statement in function.node.body:
+        visitor.visit(statement)
+    return visitor.dispatches
+
+
+def _dunder_call_targets(functions: list[_FunctionInfo]) -> dict[str, str]:
+    targets: dict[str, str] = {}
+    for function in functions:
+        if not function.qualified_name.endswith(".__call__"):
+            continue
+        class_name = function.qualified_name.rsplit(".", 2)[-2]
+        targets[class_name] = function.entity_id
+    return targets
+
+
 def _callable_dict_maps(
     index: _FunctionIndex,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
@@ -678,6 +707,47 @@ class _DictDispatchVisitor(ast.NodeVisitor):
                 func.end_col_offset or func.col_offset,
             )
             self.dispatches[key] = set(self.candidate_maps[func.value.id])
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        _ = node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        _ = node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        _ = node
+
+
+class _DunderCallDispatchVisitor(ast.NodeVisitor):
+    def __init__(self, dunder_call_by_class: dict[str, str]) -> None:
+        self.dunder_call_by_class = dunder_call_by_class
+        self.instance_targets: dict[str, str] = {}
+        self.dispatches: dict[tuple[int, int, int, int], set[str]] = {}
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        if (
+            len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id in self.dunder_call_by_class
+        ):
+            self.instance_targets[node.targets[0].id] = self.dunder_call_by_class[
+                node.value.func.id
+            ]
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in self.instance_targets:
+            key = (
+                func.lineno - 1,
+                func.col_offset,
+                (func.end_lineno or func.lineno) - 1,
+                func.end_col_offset or func.col_offset,
+            )
+            self.dispatches[key] = {self.instance_targets[func.id]}
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
