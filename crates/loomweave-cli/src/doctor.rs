@@ -200,19 +200,11 @@ impl DoctorJsonCheck {
         self.next_action = Some(next_action.into());
         self
     }
-
-    fn mark_fixed(mut self, message: impl Into<String>) -> Self {
-        self.status = "fixed";
-        self.fixed = true;
-        self.message = message.into();
-        self.next_action = None;
-        self
-    }
 }
 
 fn json_report(project_root: &Path, fix: bool) -> DoctorJsonReport {
-    // Materialise project identity before an automatic analysis so the repaired
-    // catalogue and every serving surface converge on one project UUID.
+    // Materialise project identity before other local repairs so every serving
+    // surface converges on one project UUID.
     let instance_id = check_http_instance_id_json(project_root, fix);
     let (classifier_enumeration, classifier_tags) = check_classifier_json(project_root, fix);
     let mut checks = vec![
@@ -581,7 +573,7 @@ fn validate_external_sqlite_read_gate(
     Ok(())
 }
 
-fn check_classifier_json(project_root: &Path, fix: bool) -> (DoctorJsonCheck, DoctorJsonCheck) {
+fn check_classifier_json(project_root: &Path, _fix: bool) -> (DoctorJsonCheck, DoctorJsonCheck) {
     const ENUMERATION_ID: &str = "classifier.enumeration";
     const TAGS_ID: &str = "classifier.tags";
     let db_path = loomweave_core::store::db_path(project_root);
@@ -626,38 +618,6 @@ fn check_classifier_json(project_root: &Path, fix: bool) -> (DoctorJsonCheck, Do
             "run_status": latest.run_status(),
             "reason": reason,
         });
-        if fix && latest.run_status().is_none() && latest.run_id().is_none() {
-            return match repair_classifier_analysis(project_root) {
-                Ok(()) => {
-                    let (enumeration, tags) = check_classifier_json(project_root, false);
-                    (
-                        mark_classifier_repair(enumeration, "classifier enumeration regenerated"),
-                        mark_classifier_repair(tags, "active classifier declarations regenerated"),
-                    )
-                }
-                Err(err) => {
-                    let details = serde_json::json!({
-                        "available": false,
-                        "run_id": null,
-                        "run_status": null,
-                        "reason": reason,
-                        "repair_error": err.to_string(),
-                    });
-                    (
-                        DoctorJsonCheck::problem(
-                            ENUMERATION_ID,
-                            format!("automatic classifier analysis repair failed: {err}"),
-                        )
-                        .with_details(details.clone()),
-                        DoctorJsonCheck::problem(
-                            TAGS_ID,
-                            format!("automatic classifier declaration repair failed: {err}"),
-                        )
-                        .with_details(details),
-                    )
-                }
-            };
-        }
         let (status, message_prefix) = match latest.run_status() {
             None if latest.run_id().is_none() => {
                 ("warning", "no classifier analysis run exists yet")
@@ -684,29 +644,6 @@ fn check_classifier_json(project_root: &Path, fix: bool) -> (DoctorJsonCheck, Do
         classifier_enumeration_json(&latest, coverage),
         classifier_tags_json(&latest, coverage),
     )
-}
-
-fn repair_classifier_analysis(project_root: &Path) -> Result<()> {
-    let executable = std::env::current_exe().context("resolve current Loomweave executable")?;
-    let output = Command::new(executable)
-        .arg("analyze")
-        .arg(project_root)
-        .output()
-        .context("start automatic Loomweave analysis repair")?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        bail!("`loomweave analyze` exited with {}", output.status)
-    }
-}
-
-fn mark_classifier_repair(check: DoctorJsonCheck, message: &str) -> DoctorJsonCheck {
-    if check.status == "ok" {
-        let healthy_message = check.message.clone();
-        check.mark_fixed(format!("{message}; {healthy_message}"))
-    } else {
-        check
-    }
 }
 
 fn classifier_external_gate_problem(

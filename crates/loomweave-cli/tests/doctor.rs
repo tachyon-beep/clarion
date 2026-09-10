@@ -291,10 +291,11 @@ fn doctor_reports_plain_install_healthy() {
     );
 }
 
-/// `doctor --fix` registers the MCP entry; a subsequent plain `doctor` is then
-/// fully healthy and exits 0. The `.mcp.json` gains a `loomweave` serve entry.
+/// `doctor --fix` registers the MCP entry without implicitly running analysis.
+/// The `.mcp.json` gains a `loomweave` serve entry while unanalysed classifier
+/// metadata remains advisory.
 #[test]
-fn doctor_fix_registers_mcp_then_reports_healthy() {
+fn doctor_fix_registers_mcp_without_running_analysis() {
     let dir = tempfile::tempdir().unwrap();
     install(
         &["install", "--skills", "--codex-skills", "--hooks"],
@@ -307,7 +308,7 @@ fn doctor_fix_registers_mcp_then_reports_healthy() {
     let (code, out) = doctor(dir.path(), true);
     assert_eq!(code, 0, "--fix should repair and exit 0; stdout:\n{out}");
     assert!(
-        out.contains("All orientation surfaces healthy."),
+        out.contains("no classifier analysis run exists yet"),
         "stdout:\n{out}"
     );
 
@@ -325,9 +326,14 @@ fn doctor_fix_registers_mcp_then_reports_healthy() {
         serde_json::json!(["serve"])
     );
 
-    // A plain re-run is now clean.
-    let (code, _) = doctor(dir.path(), false);
-    assert_eq!(code, 0, "a repaired project must be healthy on re-run");
+    // A plain re-run is still non-gating, but remains explicit about the
+    // unanalysed catalogue instead of hiding an implicit analysis run.
+    let (code, out) = doctor(dir.path(), false);
+    assert_eq!(code, 0, "warnings are advisory; stdout:\n{out}");
+    assert!(
+        out.contains("no classifier analysis run exists yet"),
+        "stdout:\n{out}"
+    );
 }
 
 /// `doctor --fix` preserves a sibling MCP server (e.g. filigree) already in
@@ -1017,28 +1023,41 @@ fn doctor_warns_for_an_unanalysed_catalogue_and_missing_instance_identity() {
 
 #[cfg(unix)]
 #[test]
-fn doctor_fix_materialises_identity_and_authoritative_classifier_metadata() {
+fn doctor_fix_materialises_identity_without_running_classifier_analysis() {
     let project = tempfile::tempdir().unwrap();
     install(&["install", "--all"], project.path());
     write_healthy_db(project.path());
     fs::write(project.path().join("sample.mt"), "gadget sample\n").unwrap();
-    let plugin_dir = setup_classifier_plugin_dir();
-    let plugin_path = env::join_paths([plugin_dir.path()]).unwrap();
-    let env = [("PATH", plugin_path.to_str().unwrap())];
 
-    let (code, json) = doctor_json_with_env(project.path(), true, &env, &[]);
+    let (code, json) = doctor_json(project.path(), true);
 
-    assert_eq!(code, 0, "--fix must converge: {json}");
+    assert_eq!(
+        code, 0,
+        "warnings remain advisory after local repairs: {json}"
+    );
+    assert_eq!(
+        check(&json, "http.instance_id")["status"],
+        "fixed",
+        "{json}"
+    );
+    assert_eq!(check(&json, "http.instance_id")["fixed"], true, "{json}");
     for id in [
         "classifier.enumeration",
         "classifier.tags",
-        "http.instance_id",
+        "index.freshness",
     ] {
-        assert_eq!(check(&json, id)["status"], "fixed", "{id}: {json}");
-        assert_eq!(check(&json, id)["fixed"], true, "{id}: {json}");
+        assert_eq!(
+            check(&json, id)["status"],
+            "warning",
+            "{id} must not be auto-repaired by running analysis: {json}"
+        );
+        assert_eq!(check(&json, id)["fixed"], false, "{id}: {json}");
     }
-    assert_eq!(check(&json, "index.freshness")["status"], "ok", "{json}");
-    assert_eq!(check(&json, "sei.population")["status"], "ok", "{json}");
+    assert_eq!(
+        check(&json, "sei.population")["status"],
+        "warning",
+        "{json}"
+    );
 
     let instance_path = project.path().join(".weft/loomweave/instance_id");
     let instance = fs::read_to_string(&instance_path).unwrap();
@@ -1049,28 +1068,24 @@ fn doctor_fix_materialises_identity_and_authoritative_classifier_metadata() {
         "instance identity must remain private"
     );
 
-    let conn = Connection::open(project.path().join(".weft/loomweave/loomweave.db")).unwrap();
-    let (status, coverage_schema): (String, String) = conn
-        .query_row(
-            "SELECT status, json_extract(stats, '$.classifier_coverage.schema') \
-             FROM runs ORDER BY started_at DESC, id DESC LIMIT 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+    let run_count: u64 = Connection::open(project.path().join(".weft/loomweave/loomweave.db"))
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(status, "completed");
-    assert_eq!(coverage_schema, "loomweave.classifier-coverage.v1");
+    assert_eq!(
+        run_count, 0,
+        "doctor --fix must not run network-capable analysis"
+    );
 
-    let (rerun_code, rerun) = doctor_json_with_env(project.path(), false, &env, &[]);
+    let (rerun_code, rerun) = doctor_json(project.path(), false);
     assert_eq!(rerun_code, 0, "{rerun}");
+    assert_eq!(check(&rerun, "http.instance_id")["status"], "ok", "{rerun}");
     for id in [
         "classifier.enumeration",
         "classifier.tags",
         "index.freshness",
-        "http.instance_id",
-        "sei.population",
     ] {
-        assert_eq!(check(&rerun, id)["status"], "ok", "{id}: {rerun}");
+        assert_eq!(check(&rerun, id)["status"], "warning", "{id}: {rerun}");
     }
 }
 
