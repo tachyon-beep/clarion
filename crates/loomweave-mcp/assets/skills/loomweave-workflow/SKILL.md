@@ -359,12 +359,11 @@ The graph only reflects the last `analyze`. When the working tree moves,
 X") can be out of date. You don't have to leave the session to fix that — re-scan
 in place with the `analyze_*` tools.
 
-**A refresh may already be running.** The `loomweave hook session-start` hook
-auto-starts ONE detached background `loomweave analyze` whenever it finds a stale
-index at session start (single-shot, non-blocking). So if you opened on a stale
-index, a re-scan is likely already in flight — `analyze_status_get` (below) shows
-it. The manual flow here is for staleness that appears *mid-session*, or when the
-hook isn't wired.
+**Refreshes are explicit.** The `loomweave hook session-start` hook reports a
+stale index, but it does not start `loomweave analyze` by itself. That keeps
+repo-local embedding/federation configuration from causing network work until an
+operator or agent explicitly chooses to refresh. Use the manual flow below when
+you decide the graph should be updated.
 
 The `analyze_*` tools are write-gated (the † tools above): available whenever
 `serve.mcp.enable_write_tools: true`, which is the **default for the local agent
