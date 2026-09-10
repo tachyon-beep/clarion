@@ -5,9 +5,11 @@ by running whatever ``python`` is first on its ``PATH`` unless the client sets
 ``python.pythonPath``. Under ``loomweave analyze`` launched from an agent hook
 that ``python`` is the system interpreter, which cannot import the project's
 editable install, and every ``tests/`` -> ``src/`` call target came back empty
-while the coverage claim still said ``complete``. This module picks the
-project's own interpreter deterministically so the answer no longer depends
-on who launched the run.
+while the coverage claim still said ``complete``. This module picks an
+operator- or environment-selected interpreter deterministically so the answer
+no longer depends on who launched the run. Repository-owned .venv paths are
+deliberately not auto-selected because Pyright executes pythonPath during
+analysis.
 
 The order below is a CROSS-LANGUAGE CONTRACT with
 ``crates/loomweave-core/src/plugin/interpreter.rs`` (the host runs the same
@@ -43,14 +45,14 @@ if TYPE_CHECKING:
 #   must carry the same literal.
 INTERPRETER_OVERRIDE_ENV: Final = "LOOMWEAVE_PYTHON_INTERPRETER"
 
-InterpreterSource = Literal["override", "dotvenv", "virtual_env", "conda", "path", "none"]
+InterpreterSource = Literal["override", "virtual_env", "conda", "path", "none"]
 
 _PREFIX_SOURCES: Final[tuple[tuple[str, InterpreterSource], ...]] = (
     ("VIRTUAL_ENV", "virtual_env"),
     ("CONDA_PREFIX", "conda"),
 )
 _PINNED_SOURCES: Final[frozenset[InterpreterSource]] = frozenset(
-    {"override", "dotvenv", "virtual_env", "conda"},
+    {"override", "virtual_env", "conda"},
 )
 
 
@@ -63,7 +65,7 @@ class ProjectInterpreter:
 
     @property
     def pinned(self) -> bool:
-        """True when the interpreter is project-owned (not a PATH guess)."""
+        """True when the interpreter came from an explicit operator/environment pin."""
         return self.source in _PINNED_SOURCES
 
 
@@ -78,6 +80,8 @@ def discover_project_interpreter(
     environ: Mapping[str, str] | None = None,
 ) -> ProjectInterpreter:
     """Resolve the project's interpreter in the contract order (see module doc)."""
+    # Kept for cross-language API symmetry; do not auto-select paths below it.
+    _ = project_root
     env = os.environ if environ is None else environ
     override = env.get(INTERPRETER_OVERRIDE_ENV)
     if override:
@@ -87,8 +91,6 @@ def discover_project_interpreter(
             f"loomweave-plugin-python: {INTERPRETER_OVERRIDE_ENV}={override!r} is not an "
             "executable file; ignoring the override and discovering the interpreter\n",
         )
-    if (hit := _usable(Path(project_root) / ".venv" / "bin" / "python")) is not None:
-        return ProjectInterpreter(path=str(hit), source="dotvenv")
     for var, source in _PREFIX_SOURCES:
         prefix = env.get(var)
         if prefix and (hit := _usable(Path(prefix) / "bin" / "python")) is not None:
