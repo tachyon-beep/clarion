@@ -25,18 +25,19 @@ def _make_python(path: Path) -> Path:
     return path
 
 
-def test_dotvenv_wins_over_virtual_env_and_path(tmp_path: Path) -> None:
+def test_virtual_env_wins_over_project_dotvenv_and_path(tmp_path: Path) -> None:
     dotvenv = _make_python(tmp_path / ".venv" / "bin" / "python")
     other = _make_python(tmp_path / "elsewhere" / "bin" / "python")
     environ = {"VIRTUAL_ENV": str(other.parent.parent), "PATH": str(other.parent)}
 
     found = discover_project_interpreter(tmp_path, environ)
 
-    assert found == ProjectInterpreter(path=str(dotvenv), source="dotvenv")
+    assert found == ProjectInterpreter(path=str(other), source="virtual_env")
     assert found.pinned
+    assert found.path != str(dotvenv)
 
 
-def test_override_env_wins_over_dotvenv(tmp_path: Path) -> None:
+def test_override_env_is_the_only_project_path_pin(tmp_path: Path) -> None:
     _make_python(tmp_path / ".venv" / "bin" / "python")
     override = _make_python(tmp_path / "custom" / "python")
 
@@ -47,16 +48,19 @@ def test_override_env_wins_over_dotvenv(tmp_path: Path) -> None:
     assert found.pinned
 
 
-def test_unusable_override_is_ignored_and_discovery_continues(
+def test_unusable_override_is_ignored_without_trusting_dotvenv(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     dotvenv = _make_python(tmp_path / ".venv" / "bin" / "python")
     missing = tmp_path / "nope" / "python"
 
-    found = discover_project_interpreter(tmp_path, {INTERPRETER_OVERRIDE_ENV: str(missing)})
+    found = discover_project_interpreter(
+        tmp_path, {INTERPRETER_OVERRIDE_ENV: str(missing), "PATH": str(tmp_path / "empty")}
+    )
 
-    assert found.source == "dotvenv"
-    assert found.path == str(dotvenv)
+    assert found.source == "none"
+    assert found.path is None
+    assert found.path != str(dotvenv)
     assert INTERPRETER_OVERRIDE_ENV in capsys.readouterr().err
 
 
@@ -97,23 +101,21 @@ def test_nothing_found_is_none_and_unpinned(tmp_path: Path) -> None:
     assert not found.pinned
 
 
-def test_non_executable_dotvenv_python_is_not_a_hit(tmp_path: Path) -> None:
-    target = tmp_path / ".venv" / "bin" / "python"
-    target.parent.mkdir(parents=True)
-    target.write_text("", encoding="utf-8")
-    target.chmod(stat.S_IRUSR | stat.S_IWUSR)
-    assert not os.access(target, os.X_OK)
+def test_executable_dotvenv_python_is_not_auto_selected(tmp_path: Path) -> None:
+    target = _make_python(tmp_path / ".venv" / "bin" / "python")
+    assert os.access(target, os.X_OK)
 
     found = discover_project_interpreter(tmp_path, {"PATH": str(tmp_path / "empty")})
 
     assert found.source == "none"
+    assert found.path is None
 
 
 def test_environ_defaults_to_os_environ(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    dotvenv = _make_python(tmp_path / ".venv" / "bin" / "python")
-    monkeypatch.delenv(INTERPRETER_OVERRIDE_ENV, raising=False)
+    override = _make_python(tmp_path / "trusted" / "python")
+    monkeypatch.setenv(INTERPRETER_OVERRIDE_ENV, str(override))
 
-    assert discover_project_interpreter(tmp_path).path == str(dotvenv)
+    assert discover_project_interpreter(tmp_path).path == str(override)
 
 
 def test_empty_environ_does_not_leak_to_os_environ(tmp_path: Path) -> None:
@@ -133,11 +135,11 @@ def test_symlink_paths_are_preserved(tmp_path: Path) -> None:
     symlink_python = venv_bin / "python"
     symlink_python.symlink_to(base_python)
 
-    found = discover_project_interpreter(tmp_path, {})
+    found = discover_project_interpreter(tmp_path, {INTERPRETER_OVERRIDE_ENV: str(symlink_python)})
 
     # The result should be the symlink path, not the target.
     assert found.path == str(symlink_python)
-    assert found.source == "dotvenv"
+    assert found.source == "override"
 
 
 def test_path_with_python_and_python3_in_different_dirs(tmp_path: Path) -> None:

@@ -148,14 +148,13 @@ fn effective_as_mib(manifest: &Manifest) -> u64 {
 ///   as it is on both discoveries' override rung, so the host still exports;
 ///   treating `""` as a set override would leave the plugin with an empty
 ///   variable it also ignores, and no interpreter at all;
-/// - only a PINNED (project-owned) choice is exported. A bare `PATH` guess is
-///   no better than the plugin's own fallback, and exporting it would present
-///   a guess to the plugin as an authoritative pin.
+/// - only a PINNED operator/environment choice is exported. A bare `PATH` guess
+///   is no better than the plugin's own fallback, and exporting it would present
+///   a guess to the plugin as an authoritative pin. Repository-owned `.venv`
+///   interpreters are not auto-selected because Pyright executes `pythonPath`.
 ///
 /// `env` abstracts `std::env::var_os` so the unit tests below do not read the
-/// developer's own environment. `project_root` must be canonicalised (the
-/// caller passes `canonical_root`) — discovery is not root-invariant, and
-/// `analyze` records its marker from the same canonical root.
+/// developer's own environment.
 fn exported_interpreter(
     manifest: &Manifest,
     project_root: &Path,
@@ -1589,7 +1588,7 @@ ontology_version = "0.1.0"
 
     #[cfg(unix)]
     #[test]
-    fn only_language_server_plugins_are_pointed_at_the_project_interpreter() {
+    fn only_language_server_plugins_are_pointed_at_trusted_interpreters() {
         use std::ffi::OsString;
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -1600,11 +1599,21 @@ ontology_version = "0.1.0"
         std::fs::set_permissions(&venv, std::fs::Permissions::from_mode(0o755)).unwrap();
         let empty = |_: &str| -> Option<OsString> { None };
 
-        // A pyright plugin is handed the project's own `.venv` interpreter.
+        // A repository-owned `.venv` is not exported: Pyright executes the
+        // configured pythonPath, so automatic project-root discovery would run
+        // attacker-controlled files during analysis.
         assert_eq!(
             exported_interpreter(&pyright_small_rss_manifest(), dir.path(), &empty),
+            None,
+            "a project .venv must not be exported without an operator/env pin"
+        );
+        let activated = |key: &str| -> Option<OsString> {
+            (key == "VIRTUAL_ENV").then(|| OsString::from(dir.path().join(".venv")))
+        };
+        assert_eq!(
+            exported_interpreter(&pyright_small_rss_manifest(), dir.path(), &activated),
             Some(venv.clone()),
-            "a language-server plugin must be pinned to the project interpreter"
+            "an activated environment is still exported for pyright plugins"
         );
         // A plugin that does not declare the pyright runtime never triggers
         // discovery: the variable means nothing to it, and exporting it would
@@ -1627,16 +1636,13 @@ ontology_version = "0.1.0"
         );
         // ...but an EMPTY value is not an override. Both discoveries treat
         // `""` as unset on the override rung (`if override:` in Python,
-        // `.filter(|v| !v.is_empty())` in Rust), so a bare `is_some()` guard
-        // here would suppress the export for a variable the plugin then also
-        // ignores — leaving the child with no interpreter at all, which is the
-        // launcher-dependent hole this export exists to close.
+        // `.filter(|v| !v.is_empty())` in Rust).
         let empty_override =
             |key: &str| -> Option<OsString> { (key == PYTHON_INTERPRETER_ENV).then(OsString::new) };
         assert_eq!(
             exported_interpreter(&pyright_small_rss_manifest(), dir.path(), &empty_override),
-            Some(venv.clone()),
-            "an empty override is unset: the host still exports its own pinned choice"
+            None,
+            "an empty override is unset and must not revive project .venv discovery"
         );
         // An UNPINNED (bare `PATH`) choice is not exported: presenting a guess
         // to the plugin as an authoritative pin buys nothing over its own

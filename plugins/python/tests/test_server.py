@@ -938,7 +938,7 @@ def test_initialize_discovers_and_advertises_the_project_interpreter(
     fake_python.parent.mkdir(parents=True)
     fake_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_python.chmod(0o755)
-    monkeypatch.delenv("LOOMWEAVE_PYTHON_INTERPRETER", raising=False)
+    monkeypatch.setenv("LOOMWEAVE_PYTHON_INTERPRETER", str(fake_python))
     state = server_module.ServerState()
 
     response = server_module.handle_initialize(
@@ -947,7 +947,7 @@ def test_initialize_discovers_and_advertises_the_project_interpreter(
 
     assert response["capabilities"]["python_interpreter"] == {
         "path": str(fake_python.resolve()),
-        "source": "dotvenv",
+        "source": "override",
         "pinned": True,
     }
     assert state.interpreter is not None
